@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, create_engine, select
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, create_engine, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -411,14 +411,17 @@ async def get_route(origin_latitude: float, origin_longitude: float, destination
 
 def ride_response(ride: Ride, db: Session, viewer: User | None = None) -> dict:
     driver = db.get(Driver, ride.driver_id) if ride.driver_id else None
+    review = db.scalar(select(Review.id).where(Review.ride_id == ride.id))
+    rating_count = db.scalar(select(func.count(Review.id)).join(Ride, Review.ride_id == Ride.id).where(Ride.driver_id == driver.id)) if driver else 0
     return {
         "id": ride.id, "pickup": ride.pickup, "destination": ride.destination,
         "ride_type": ride.ride_type, "status": ride.status,
         "distance_km": ride.distance_km, "duration_min": ride.duration_min,
         "fare_paise": ride.fare_paise, "payment_status": ride.payment_status,
+        "reviewed": review is not None,
         "created_at": ride.created_at.isoformat(),
         "otp": ride.otp if viewer and viewer.id == ride.rider_id and ride.status == "arrived" else None,
-        "driver": ({"name": driver.name, "car": driver.car, "plate": driver.plate, "rating": driver.rating, "latitude": driver.latitude, "longitude": driver.longitude} if driver else None),
+        "driver": ({"name": driver.name, "car": driver.car, "plate": driver.plate, "rating": driver.rating if rating_count else None, "rating_count": rating_count, "latitude": driver.latitude, "longitude": driver.longitude} if driver else None),
     }
 
 
@@ -539,8 +542,8 @@ def create_payment_intent(ride_id: int, db: Session = Depends(get_db), user: Use
     checkout = stripe.checkout.Session.create(
         mode="payment",
         line_items=[{"price_data": {"currency": "inr", "product_data": {"name": f"Cabby ride #{ride.id}"}, "unit_amount": ride.fare_paise}, "quantity": 1}],
-        success_url=f"{frontend_url}/?payment=success&ride_id={ride.id}&session_id={{CHECKOUT_SESSION_ID}}",
-        cancel_url=f"{frontend_url}/?payment=cancelled&ride_id={ride.id}",
+        success_url=f"{frontend_url}/payment?payment=success&ride_id={ride.id}&session_id={{CHECKOUT_SESSION_ID}}",
+        cancel_url=f"{frontend_url}/payment?payment=cancelled&ride_id={ride.id}",
         metadata={"ride_id": str(ride.id), "rider_id": str(user.id)},
         payment_intent_data={"metadata": {"ride_id": str(ride.id), "rider_id": str(user.id)}},
         customer_email=user.email,
@@ -601,9 +604,14 @@ def add_review(ride_id: int, data: ReviewIn, db: Session = Depends(get_db), user
     if db.scalar(select(Review.id).where(Review.ride_id == ride.id)):
         raise HTTPException(409, "Ride already reviewed")
     review = Review(ride_id=ride.id, rider_id=user.id, rating=data.rating, comment=data.comment)
+    if ride.driver_id:
+        driver = db.get(Driver, ride.driver_id)
+        ratings = db.scalars(select(Review.rating).join(Ride, Review.ride_id == Ride.id).where(Ride.driver_id == ride.driver_id)).all()
+        all_ratings = [*ratings, data.rating]
+        driver.rating = sum(all_ratings) / len(all_ratings)
     db.add(review)
     db.commit()
-    return {"id": review.id, "ride_id": ride.id, "rating": review.rating, "comment": review.comment}
+    return {"id": review.id, "ride_id": ride.id, "rating": review.rating, "comment": review.comment, "driver_rating": driver.rating if ride.driver_id else None}
 
 
 @app.get("/api/drivers/rides")
@@ -626,7 +634,9 @@ def driver_me(db: Session = Depends(get_db), user: User = Depends(current_user))
     driver = db.scalar(select(Driver).where(Driver.user_id == user.id))
     if driver is None:
         raise HTTPException(404, "Driver profile not found")
-    return {"available": driver.available, "name": driver.name, "car": driver.car, "plate": driver.plate}
+    rating_count = db.scalar(select(func.count(Review.id)).join(Ride, Review.ride_id == Ride.id).where(Ride.driver_id == driver.id)) or 0
+    return {"available": driver.available, "name": driver.name, "car": driver.car, "plate": driver.plate,
+            "rating": driver.rating if rating_count else None, "rating_count": rating_count}
 
 
 @app.patch("/api/drivers/availability")
