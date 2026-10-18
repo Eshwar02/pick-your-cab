@@ -246,7 +246,7 @@ def startup() -> None:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "payments": "stripe" if STRIPE_SECRET_KEY else "demo", "maps": "openstreetmap/osrm"}
+    return {"status": "ok", "payments": "stripe" if STRIPE_SECRET_KEY else "unconfigured", "maps": "openstreetmap/osrm"}
 
 
 @app.post("/api/auth/register")
@@ -526,11 +526,7 @@ def create_payment_intent(ride_id: int, db: Session = Depends(get_db), user: Use
     if ride.payment_status == "paid":
         return {"mode": "paid", "payment_status": "paid"}
     if not STRIPE_SECRET_KEY:
-        if os.getenv("APP_ENV", "development").lower() == "production":
-            raise HTTPException(503, "Card payments are not configured")
-        ride.payment_status = "demo_paid"
-        db.commit()
-        return {"mode": "demo", "payment_status": ride.payment_status, "message": "Set STRIPE_SECRET_KEY to enable card payments."}
+        raise HTTPException(503, "Card payments are not configured. Set STRIPE_SECRET_KEY on the backend.")
     if ride.stripe_checkout_session_id:
         try:
             existing = stripe.checkout.Session.retrieve(ride.stripe_checkout_session_id)
