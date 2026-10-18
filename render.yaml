@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: cabby-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: SUPABASE_DATABASE_URL
+        sync: false
+      - key: TOKEN_SECRET
+        generateValue: true
+      - key: CORS_ORIGINS
+        sync: false
+      - key: MAPS_USER_AGENT
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: APP_ENV
+        value: production
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
