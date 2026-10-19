@@ -14,8 +14,10 @@ type RideMapProps = {
 };
 
 const vehicleIcons: Record<string, string> = { auto: "🛺", bike: "🏍️", cab: "🚕", maxi_cab: "🚐" };
+const vehicleLabels: Record<string, string> = { auto: "Auto", bike: "Bike", cab: "Cab", maxi_cab: "Maxi cab" };
+const tamilDriverNames = ["அருண்", "கார்த்திக்", "மீனா", "சரவணன்", "காவ்யா", "பிரபு", "திவ்யா", "விஜய்", "லதா", "முருகன்", "நந்தினி", "ரமேஷ்", "யாழினி", "செல்வம்", "அனிதா", "மணிகண்டன்", "பிரியா", "சுரேஷ்", "கீர்த்தனா", "பாலா"];
 const mockVehicles = Array.from({ length: 20 }, (_, index) => ({
-  id: index + 1,
+  name: tamilDriverNames[index],
   mode: (["auto", "bike", "cab", "maxi_cab"] as const)[index % 4],
   // Stable per-vehicle values keep the demo fleet spread out after every render.
   angle: index * 2.399963 + ((index * 37) % 19) / 19,
@@ -23,7 +25,6 @@ const mockVehicles = Array.from({ length: 20 }, (_, index) => ({
   phase: ((index * 47) % 360) * Math.PI / 180,
   cycleSeconds: 38 + (index * 17) % 43,
   orbit: 28 + (index * 23) % 48,
-  eta: 1 + (index % 7),
 }));
 
 function nearbyVehiclePosition(pickup: Place, vehicle: (typeof mockVehicles)[number], elapsedSeconds: number): [number, number] {
@@ -37,6 +38,19 @@ function nearbyVehiclePosition(pickup: Place, vehicle: (typeof mockVehicles)[num
   const distanceEast = Math.cos(vehicle.angle) * vehicle.radius + driftEast;
   const distanceNorth = Math.sin(vehicle.angle) * vehicle.radius + driftNorth;
   return [pickup.latitude + distanceNorth / latitudeScale, pickup.longitude + distanceEast / longitudeScale];
+}
+
+function distanceFromPickupKm(pickup: Place, position: [number, number]) {
+  const radians = Math.PI / 180;
+  const latitudeDelta = (position[0] - pickup.latitude) * radians;
+  const longitudeDelta = (position[1] - pickup.longitude) * radians;
+  const arc = Math.sin(latitudeDelta / 2) ** 2
+    + Math.cos(pickup.latitude * radians) * Math.cos(position[0] * radians) * Math.sin(longitudeDelta / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(arc), Math.sqrt(1 - arc));
+}
+
+function formatDistance(distanceKm: number) {
+  return distanceKm < 1 ? `${Math.max(10, Math.round(distanceKm * 1000 / 10) * 10)} m` : `${distanceKm.toFixed(1)} km`;
 }
 
 export default function RideMap({ pickup, destination, path, driver, mode, searching = false }: RideMapProps) {
@@ -104,9 +118,9 @@ export default function RideMap({ pickup, destination, path, driver, mode, searc
           mockDriverMarkers.current = mockVehicles.map((vehicle) => {
             const latLng = nearbyVehiclePosition(pickup, vehicle, 0);
             const icon = vehicleIcons[vehicle.mode];
-            return L.marker(latLng, { icon: L.divIcon({ className: "zoomo-leaflet-icon mock-vehicle-icon", html: `<span aria-label="Simulated ${vehicle.mode.replace("_", " ")}">${icon}</span>`, iconSize: [38, 38], iconAnchor: [19, 19] }) })
+            return L.marker(latLng, { icon: L.divIcon({ className: "zoomo-leaflet-icon mock-vehicle-icon", html: `<span aria-label="Nearby ${vehicleLabels[vehicle.mode]}">${icon}</span>`, iconSize: [38, 38], iconAnchor: [19, 19] }) })
               .addTo(map.current!)
-              .bindTooltip(`Demo ${vehicle.mode.replace("_", " ")} · Nearby driver ${String(vehicle.id).padStart(2, "0")} · ~${vehicle.eta} min`, { direction: "top", offset: [0, -14] });
+              .bindTooltip(`${vehicle.name} · ${vehicleLabels[vehicle.mode]} · ${formatDistance(distanceFromPickupKm(pickup, latLng))} from pickup`, { direction: "top", offset: [0, -14] });
           });
         }
         const startedAt = Date.now();
@@ -114,7 +128,9 @@ export default function RideMap({ pickup, destination, path, driver, mode, searc
           const elapsed = (Date.now() - startedAt) / 1000;
           mockVehicles.forEach((vehicle, index) => {
             const position = nearbyVehiclePosition(pickup, vehicle, elapsed);
-            mockDriverMarkers.current[index]?.setLatLng(position);
+            const marker = mockDriverMarkers.current[index];
+            marker?.setLatLng(position);
+            marker?.setTooltipContent(`${vehicle.name} · ${vehicleLabels[vehicle.mode]} · ${formatDistance(distanceFromPickupKm(pickup, position))} from pickup`);
           });
         };
         moveVehicles();
@@ -131,5 +147,5 @@ export default function RideMap({ pickup, destination, path, driver, mode, searc
     return () => { disposed = true; if (motionTimer) window.clearInterval(motionTimer); };
   }, [pickup, destination, pickup.latitude, pickup.longitude, destination.latitude, destination.longitude, path, driver?.latitude, driver?.longitude, mode, searching]);
 
-  return <div className="ride-map" ref={host} aria-label="OpenStreetMap route map">{searching && <div className="mock-driver-banner" role="status"><span className="mock-driver-pulse" />Finding your driver · 20 nearby demo vehicles</div>}</div>;
+  return <div className="ride-map" ref={host} aria-label="OpenStreetMap route map">{searching && <div className="mock-driver-banner" role="status"><span className="mock-driver-pulse" />Finding your driver · 20 nearby drivers</div>}</div>;
 }
