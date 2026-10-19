@@ -27,6 +27,7 @@ export default function LocationSelectionMap({
   const destinationMarker = useRef<import("leaflet").Marker | null>(null);
   const previewMarker = useRef<import("leaflet").Marker | null>(null);
   const routeLine = useRef<import("leaflet").Polyline | null>(null);
+  const routeFlowLine = useRef<import("leaflet").Polyline | null>(null);
   const selectionCallback = useRef(onSelect);
   const currentPlaces = useRef({ activeStep, pickup, destination, preview, interactive });
   const [hovering, setHovering] = useState(false);
@@ -97,7 +98,9 @@ export default function LocationSelectionMap({
       syncMarker(previewMarker, preview, "preview");
       if (path && path.length > 1) {
         if (routeLine.current) routeLine.current.setLatLngs(path);
-        else routeLine.current = L.polyline(path, { color: "#d2a700", weight: 5, opacity: 0.9, lineCap: "round", lineJoin: "round" }).addTo(currentMap);
+        else routeLine.current = L.polyline(path, { color: "#1685f8", weight: 7, opacity: 0.95, lineCap: "round", lineJoin: "round" }).addTo(currentMap);
+        if (routeFlowLine.current) routeFlowLine.current.setLatLngs(path);
+        else routeFlowLine.current = L.polyline(path, { className: "route-flow-line", color: "#fff", weight: 3, opacity: 0.98, dashArray: "9 15", dashOffset: "0", lineCap: "round", lineJoin: "round", interactive: false }).addTo(currentMap);
         const boundsPoints: [number, number][] = [...path];
         if (pickup) boundsPoints.push([pickup.latitude, pickup.longitude]);
         if (destination) boundsPoints.push([destination.latitude, destination.longitude]);
@@ -105,6 +108,8 @@ export default function LocationSelectionMap({
       } else if (routeLine.current) {
         routeLine.current.remove();
         routeLine.current = null;
+        routeFlowLine.current?.remove();
+        routeFlowLine.current = null;
       }
       if (preview) currentMap.flyTo([preview.latitude, preview.longitude], Math.max(currentMap.getZoom(), 16), { duration: 0.45 });
     });
