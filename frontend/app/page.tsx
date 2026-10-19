@@ -12,10 +12,14 @@ type Mode = { id: string; name: string; description: string; icon: string; seats
 type Ride = { id: number; pickup: string; destination: string; ride_type: string; status: string; distance_km: number; duration_min: number; fare_paise: number; payment_status: string; reviewed: boolean; otp?: string | null; driver: null | { name: string; car: string; plate: string; rating: number | null; rating_count: number; latitude: number | null; longitude: number | null } };
 type Route = { distance_km: number; duration_min: number; path: [number, number][]; modes?: Mode[] };
 
+class ApiError extends Error {
+  constructor(message: string, readonly status: number) { super(message); }
+}
+
 async function api<T>(path: string, token?: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API}${path}`, { ...options, headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}), ...options.headers } });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.detail || "Request failed. Check API connection.");
+  if (!response.ok) throw new ApiError(body.detail || "Request failed. Check API connection.", response.status);
   return body as T;
 }
 const fmt = (paise: number) => `₹${Math.round(paise / 100)}`;
@@ -64,7 +68,22 @@ export default function Home() {
     const saved = localStorage.getItem("cabby_token");
     if (!saved) { setSessionReady(true); return; }
     setToken(saved);
-    api<User>("/api/auth/me", saved).then(setUser).catch(() => { localStorage.removeItem("cabby_token"); setToken(""); }).finally(() => setSessionReady(true));
+    const cachedUser = localStorage.getItem("cabby_user");
+    if (cachedUser) {
+      try { setUser(JSON.parse(cachedUser) as User); } catch { localStorage.removeItem("cabby_user"); }
+    }
+    api<User>("/api/auth/me", saved).then((current) => {
+      setUser(current);
+      localStorage.setItem("cabby_user", JSON.stringify(current));
+    }).catch((reason) => {
+      if (reason instanceof ApiError && reason.status === 401) {
+        localStorage.removeItem("cabby_token");
+        localStorage.removeItem("cabby_user");
+        setToken("");
+        setUser(null);
+      }
+      // Keep the cached session through temporary network/API outages.
+    }).finally(() => setSessionReady(true));
   }, []);
 
   useEffect(() => {
@@ -135,7 +154,9 @@ export default function Home() {
     event.preventDefault(); setAuthBusy(true); setAuthError("");
     try {
       const result = await api<{ token: string; user: User }>(`/api/auth/${register ? "register" : "login"}`, undefined, { method: "POST", body: JSON.stringify({ name, email, password, role, vehicle, plate, ride_type: driverMode }) });
-      localStorage.setItem("cabby_token", result.token); setToken(result.token); setUser(result.user);
+      localStorage.setItem("cabby_token", result.token);
+      localStorage.setItem("cabby_user", JSON.stringify(result.user));
+      setToken(result.token); setUser(result.user);
     } catch (reason) { setAuthError(reason instanceof Error ? reason.message : "Authentication failed"); }
     finally { setAuthBusy(false); }
   }
@@ -223,7 +244,12 @@ export default function Home() {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Review failed"); }
   }
 
-  function logout() { localStorage.removeItem("cabby_token"); setToken(""); setUser(null); setRide(null); setPickup(null); setDestination(null); setStep("pickup"); setView("ride"); }
+  function logout() {
+    if (token) void api("/api/auth/logout", token, { method: "POST" }).catch(() => {});
+    localStorage.removeItem("cabby_token");
+    localStorage.removeItem("cabby_user");
+    setToken(""); setUser(null); setRide(null); setPickup(null); setDestination(null); setStep("pickup"); setView("ride");
+  }
 
   if (!sessionReady) return <main className="auth-gate"><div className="auth-card" role="status">Checking your account…</div></main>;
   if (!user) return <main className="auth-gate"><div className="auth-card"><a className="brand" href="#">✳ cabby</a><span className="section-kicker">YOUR CITY, YOUR RIDE</span><h1>{register ? "Create your account" : "Welcome back"}</h1><p>Sign in to book rides. No guest access.</p><form onSubmit={submitAuth}>

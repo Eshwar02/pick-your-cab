@@ -56,6 +56,13 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+    nonce: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class Driver(Base):
     __tablename__ = "drivers"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -195,10 +202,13 @@ def get_db():
         yield session
 
 
-def encode_token(user_id: int) -> str:
+def encode_token(user_id: int, db: Session) -> str:
     nonce = secrets.token_urlsafe(8)
-    payload = f"{nonce}.{user_id}.{int(time.time()) + 60 * 60 * 24 * 14}"
+    # Remember-me sessions persist until explicitly revoked by /api/auth/logout.
+    payload = f"{nonce}.{user_id}.0"
     signature = hmac.new(TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    db.add(AuthSession(nonce=nonce, user_id=user_id))
+    db.commit()
     return f"{payload}.{signature}"
 
 
@@ -210,7 +220,10 @@ def current_user(authorization: str | None = Header(default=None), db: Session =
         nonce, user_id, expiry, signature = token.split(".", 3)
         payload = f"{nonce}.{user_id}.{expiry}"
         expected = hmac.new(TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(signature, expected) or int(expiry) < int(time.time()):
+        if not hmac.compare_digest(signature, expected) or (int(expiry) != 0 and int(expiry) < int(time.time())):
+            raise ValueError
+        session = db.get(AuthSession, nonce)
+        if session is None or session.user_id != int(user_id):
             raise ValueError
         user = db.get(User, int(user_id))
     except (ValueError, TypeError):
@@ -261,7 +274,7 @@ def register(data: UserIn, db: Session = Depends(get_db)):
     if user.role == "driver":
         db.add(Driver(user_id=user.id, name=user.name, car=data.vehicle, plate=data.plate.upper(), ride_type=data.ride_type, available=True))
         db.commit()
-    return {"token": encode_token(user.id), "user": {"id": user.id, "name": user.name, "email": user.email, "role": user.role}}
+    return {"token": encode_token(user.id, db), "user": {"id": user.id, "name": user.name, "email": user.email, "role": user.role}}
 
 
 @app.post("/api/auth/login")
@@ -269,12 +282,22 @@ def login(data: LoginIn, db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.email == data.email.lower()))
     if user is None or not verify_password(data.password, user.password_hash):
         raise HTTPException(401, "Email or password is incorrect")
-    return {"token": encode_token(user.id), "user": {"id": user.id, "name": user.name, "email": user.email, "role": user.role}}
+    return {"token": encode_token(user.id, db), "user": {"id": user.id, "name": user.name, "email": user.email, "role": user.role}}
 
 
 @app.get("/api/auth/me")
 def me(user: User = Depends(current_user)):
     return {"id": user.id, "name": user.name, "email": user.email, "role": user.role}
+
+
+@app.post("/api/auth/logout")
+def logout(authorization: str = Header(...), user: User = Depends(current_user), db: Session = Depends(get_db)):
+    nonce = authorization.removeprefix("Bearer ").split(".", 1)[0]
+    session = db.get(AuthSession, nonce)
+    if session is not None and session.user_id == user.id:
+        db.delete(session)
+        db.commit()
+    return {"ok": True}
 
 
 location_cache: dict[str, object] = {}
