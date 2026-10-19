@@ -589,9 +589,10 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
     if event.type in {"payment_intent.succeeded", "checkout.session.completed", "checkout.session.async_payment_succeeded"}:
         paid_object = event.data.object
         with SessionLocal() as db:
-            payment_intent_id = getattr(paid_object, "payment_intent", None) if event.type == "checkout.session.completed" else paid_object.id
+            is_checkout_event = event.type.startswith("checkout.session.")
+            payment_intent_id = getattr(paid_object, "payment_intent", None) if is_checkout_event else paid_object.id
             ride_id = getattr(paid_object, "metadata", {}).get("ride_id")
-            session_id = getattr(paid_object, "id", None) if event.type != "payment_intent.succeeded" else None
+            session_id = getattr(paid_object, "id", None) if is_checkout_event else None
             ride = db.get(Ride, int(ride_id)) if ride_id and str(ride_id).isdigit() else None
             if ride is None and session_id:
                 ride = db.scalar(select(Ride).where(Ride.stripe_checkout_session_id == session_id))
@@ -606,7 +607,7 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
                     ride.stripe_checkout_session_id = session_id
                 ride.payment_status = "paid"
                 db.commit()
-    elif event.type == "checkout.session.expired":
+    elif event.type in {"checkout.session.expired", "checkout.session.async_payment_failed"}:
         session = event.data.object
         with SessionLocal() as db:
             ride = db.scalar(select(Ride).where(Ride.stripe_checkout_session_id == session.id))

@@ -163,7 +163,15 @@ Repo rename does not change Vercel project slug/domain. Rename those in Vercel i
 
 ### Stripe
 
-Start in Stripe test mode. Set `FRONTEND_URL`; configure webhook `https://<api-host>/api/webhooks/stripe`. Subscribe to `checkout.session.completed`, `.async_payment_succeeded`, `.expired`; `payment_intent.succeeded` also supported. Signed webhook owns paid status; browser return URL does not.
+Zoomo uses Stripe-hosted Checkout for completed rides. API creates the Checkout Session from server-side fare data, redirects rider to Stripe, and marks ride paid only after a signed webhook with matching INR amount arrives. Return URL alone never marks a ride paid.
+
+1. Create a Stripe account and use **Test mode** while setting up.
+2. In Stripe Dashboard, copy test **Secret key** (`sk_test_...`) into API `STRIPE_SECRET_KEY`. Never put this key in Vercel or a `NEXT_PUBLIC_*` variable.
+3. Set API `FRONTEND_URL` to deployed Zoomo web origin, plus Vercel `NEXT_PUBLIC_API_URL` to API origin. Redeploy both services after environment changes.
+4. In Stripe Dashboard **Developers → Webhooks**, add endpoint `https://<api-host>/api/webhooks/stripe`. Subscribe to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, and `checkout.session.expired`. Copy endpoint signing secret (`whsec_...`) into API `STRIPE_WEBHOOK_SECRET`, then redeploy API.
+5. Complete a ride in test mode and use Stripe’s documented test card `4242 4242 4242 4242`, any future expiry, and any CVC. Confirm Stripe sends webhook successfully and ride history changes from `pending` to `paid`.
+
+For local webhook testing, install Stripe CLI, then run `stripe listen --forward-to localhost:8000/api/webhooks/stripe`; put its printed `whsec_...` value in local API environment and restart API. Use test keys and never commit credentials. Switch to live mode only after account activation and production webhook setup. Stripe Checkout returns the customer to `/payment`; webhook signature + currency + amount verification drive paid status. See [Stripe Checkout fulfillment](https://docs.stripe.com/checkout/fulfillment) and [Stripe API keys](https://docs.stripe.com/keys).
 
 ## Quality checks
 

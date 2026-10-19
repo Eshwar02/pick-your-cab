@@ -95,7 +95,7 @@ export default function PaymentPage() {
         {returnStatus === "cancelled" && !paid && <p className="payment-help">No charge completed. Retry payment when ready.</p>}
         {error && <p className="form-error" role="alert">{error}</p>}
         {ride?.status !== "completed" && ride && <p className="payment-help">Payment opens after driver marks ride completed.</p>}
-        {!paid && ride?.status === "completed" && returnStatus !== "success" && <button className="book-button" disabled={busy} onClick={() => void startPayment()}>{busy ? "Opening secure checkout…" : `Continue to Stripe · ${money(ride.fare_paise)}`}</button>}
+        {!paid && ride?.status === "completed" && (returnStatus !== "success" || ride.payment_status === "unpaid") && <button className="book-button" disabled={busy} onClick={() => void startPayment()}>{busy ? "Opening secure checkout…" : `Continue to Stripe · ${money(ride.fare_paise)}`}</button>}
         {returnStatus === "success" && !paid && <button className="next-button" disabled={busy} onClick={() => void checkStatus()}>{busy ? "Checking…" : "Check payment status"}</button>}
         <Link className="payment-back" href="/?view=history">Return to Zoomo</Link>
         <p className="payment-secure-note">Card details handled securely by Stripe Checkout.</p>
