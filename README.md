@@ -4,8 +4,6 @@
 
 > **Ride booking for riders + drivers.** Search pickup. Compare route fares. Book. Track. Pay. Review.
 
-![Zoomo ride booking flow, animated](docs/assets/zoomo-ride-flow.svg)
-
 Early-stage SaaS MVP: responsive web app, role-aware API, PostgreSQL, maps, Stripe Checkout. Core ride lifecycle works. Public launch needs stronger ops, support, and service controls.
 
 ## Product
