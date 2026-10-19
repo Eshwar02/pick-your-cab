@@ -443,6 +443,10 @@ def ride_response(ride: Ride, db: Session, viewer: User | None = None) -> dict:
         "fare_paise": ride.fare_paise, "payment_status": ride.payment_status,
         "reviewed": review is not None,
         "created_at": ride.created_at.isoformat(),
+        "pickup_latitude": ride.pickup_latitude,
+        "pickup_longitude": ride.pickup_longitude,
+        "destination_latitude": ride.destination_latitude,
+        "destination_longitude": ride.destination_longitude,
         "otp": ride.otp if viewer and viewer.id == ride.rider_id and ride.status == "arrived" else None,
         "driver": ({"name": driver.name, "car": driver.car, "plate": driver.plate, "rating": driver.rating if rating_count else None, "rating_count": rating_count, "latitude": driver.latitude, "longitude": driver.longitude} if driver else None),
     }

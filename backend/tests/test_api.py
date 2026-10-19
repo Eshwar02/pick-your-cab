@@ -98,6 +98,8 @@ def test_complete_ride_lifecycle_and_access_controls(client):
     ride_id = ride_response.json()["id"]
     assert ride_response.json()["status"] == "requested"
     assert ride_response.json()["fare_paise"] > 0
+    assert ride_response.json()["pickup_latitude"] == coordinates["origin_latitude"]
+    assert ride_response.json()["destination_longitude"] == coordinates["destination_longitude"]
 
     assert client.get(f"/api/rides/{ride_id}", headers=driver_headers).status_code == 404
     assert client.get("/api/drivers/rides", headers=driver_headers).json()[0]["id"] == ride_id

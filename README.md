@@ -1,6 +1,6 @@
 # Zoomo
 
-<img src="logos/zoomo-logo-static.svg" width="180" alt="Zoomo product logo" />
+<p align="center"><img src="logos/zoomo-logo-static.svg" width="180" alt="Zoomo product logo" /></p>
 
 > **Ride booking for riders + drivers.** Search pickup. Compare route fares. Book. Track. Pay. Review.
 
@@ -16,7 +16,7 @@ Early-stage SaaS MVP: responsive web app, role-aware API, PostgreSQL, maps, Stri
 - Search address or choose map point; request route estimate.
 - Compare bike, auto, cab, maxi-cab fares.
 - Track driver; share pickup OTP; cancel eligible ride; view history.
-- Pay completed ride via Stripe Checkout; rate driver.
+- Pay completed ride via Stripe Checkout; rate driver. Search/filter ride history; rebook past routes with refreshed fares.
 - Persistent sign-in until logout. Old Cabby browser session migrates to Zoomo storage.
 
 ### Driver experience

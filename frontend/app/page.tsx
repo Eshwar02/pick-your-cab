@@ -12,7 +12,7 @@ const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 type Place = { label: string; latitude: number; longitude: number };
 type User = { id: number; name: string; email: string; role: "rider" | "driver" };
 type Mode = { id: string; name: string; description: string; icon: string; seats: number; fare_paise: number };
-type Ride = { id: number; pickup: string; destination: string; ride_type: string; status: string; distance_km: number; duration_min: number; fare_paise: number; payment_status: string; reviewed: boolean; otp?: string | null; driver: null | { name: string; car: string; plate: string; rating: number | null; rating_count: number; latitude: number | null; longitude: number | null } };
+type Ride = { id: number; pickup: string; destination: string; ride_type: string; status: string; distance_km: number; duration_min: number; fare_paise: number; payment_status: string; reviewed: boolean; created_at?: string; pickup_latitude?: number | null; pickup_longitude?: number | null; destination_latitude?: number | null; destination_longitude?: number | null; otp?: string | null; driver: null | { name: string; car: string; plate: string; rating: number | null; rating_count: number; latitude: number | null; longitude: number | null } };
 type Route = { distance_km: number; duration_min: number; path: [number, number][]; modes?: Mode[] };
 
 class ApiError extends Error {
@@ -54,6 +54,9 @@ export default function Home() {
   const [mapPickerOpen, setMapPickerOpen] = useState(false);
   const [ride, setRide] = useState<Ride | null>(null);
   const [history, setHistory] = useState<Ride[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [historyFilter, setHistoryFilter] = useState<"all" | "completed" | "cancelled">("all");
   const [reviewing, setReviewing] = useState<number | null>(null);
   const [reviewed, setReviewed] = useState<number[]>([]);
   const [reviewRating, setReviewRating] = useState(5);
@@ -197,7 +200,12 @@ export default function Home() {
 
   useEffect(() => {
     if (!token || !user) return;
-    if (view === "history") void api<Ride[]>("/api/rides", token).then(setHistory).catch((reason: Error) => setError(reason.message));
+    if (view === "history") {
+      let stale = false;
+      queueMicrotask(() => { if (!stale) setHistoryLoading(true); });
+      void api<Ride[]>("/api/rides", token).then((items) => { if (!stale) setHistory(items); }).catch((reason: Error) => { if (!stale) setError(reason.message); }).finally(() => { if (!stale) setHistoryLoading(false); });
+      return () => { stale = true; };
+    }
     if (view === "driver") {
       const load = () => void api<Ride[]>("/api/drivers/rides", token).then(setDriverRides).catch((reason: Error) => setError(reason.message));
       load(); const timer = window.setInterval(load, 4000);
@@ -232,6 +240,25 @@ export default function Home() {
     router.push(`/payment?ride_id=${rideId}`);
   }
 
+  async function repeatRide(item: Ride) {
+    if (item.pickup_latitude == null || item.pickup_longitude == null || item.destination_latitude == null || item.destination_longitude == null) {
+      setError("This older trip has no saved map points. Search locations to book it again.");
+      return;
+    }
+    setBusy(true); setError("");
+    const nextPickup = { label: item.pickup, latitude: item.pickup_latitude, longitude: item.pickup_longitude };
+    const nextDestination = { label: item.destination, latitude: item.destination_latitude, longitude: item.destination_longitude };
+    const params = new URLSearchParams({ origin_latitude: String(nextPickup.latitude), origin_longitude: String(nextPickup.longitude), destination_latitude: String(nextDestination.latitude), destination_longitude: String(nextDestination.longitude) });
+    try {
+      const estimate = await api<Route>(`/api/rides/estimate?${params}`, token);
+      setPickup(nextPickup); setDestination(nextDestination); setRoute(estimate);
+      setSelectedMode(estimate.modes?.some((mode) => mode.id === item.ride_type) ? item.ride_type : estimate.modes?.[0]?.id ?? "");
+      setStep("modes"); setView("ride");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not estimate this trip"); }
+    finally { setBusy(false); }
+  }
+
   async function cancelRide() {
     if (!ride) return;
     setBusy(true);
@@ -252,7 +279,7 @@ export default function Home() {
   function logout() {
     if (token) void api("/api/auth/logout", token, { method: "POST" }).catch(() => {});
     clearSession();
-    setToken(""); setUser(null); setRide(null); setPickup(null); setDestination(null); setStep("pickup"); setView("ride");
+    setToken(""); setUser(null); setRide(null); setHistory([]); setDriverRides([]); setHistoryQuery(""); setHistoryFilter("all"); setPickup(null); setDestination(null); setStep("pickup"); setView("ride");
   }
 
   if (!user) return <main className="auth-gate"><div className="auth-card"><Brand /><span className="section-kicker">YOUR CITY, YOUR RIDE</span><h1>{register ? "Create your account" : "Welcome back"}</h1><p>Sign in to book rides. No guest access.</p><form onSubmit={submitAuth}>
@@ -261,6 +288,7 @@ export default function Home() {
 
   const modes = route?.modes ?? [];
   const statuses: Record<string, string> = { requested: "Finding a nearby driver", accepted: "Driver accepted your ride", arriving: "Driver is on the way", arrived: "Driver arrived · share OTP", in_progress: "Ride in progress", completed: "Ride completed", cancelled: "Ride cancelled" };
+  const visibleHistory = history.filter((item) => (historyFilter === "all" || item.status === historyFilter) && `${item.pickup} ${item.destination} ${item.ride_type}`.toLowerCase().includes(historyQuery.trim().toLowerCase()));
   return <main className="app-shell">
     <header className="topbar"><Brand /><nav><button className={view === "ride" ? "active" : ""} onClick={() => setView("ride")}>Book ride</button>{user.role === "rider" ? <button onClick={() => setView("history")}>History</button> : <button onClick={() => setView("driver")}>Driver</button>}</nav><div className="profile-button">{user.name}<button onClick={logout}>Sign out</button></div></header>
     {error && <p className="form-error" role="alert">{error}</p>}
@@ -272,7 +300,15 @@ export default function Home() {
       {step === "modes" && route && <section className="flow-card"><span className="section-kicker">STEP 3 OF 3 · CHOOSE RIDE</span><h2>Pick your ride</h2><p>{route.distance_km} km · about {route.duration_min} min</p><div className="mode-list">{modes.map((mode) => <button key={mode.id} className={`mode-option ${selectedMode === mode.id ? "selected" : ""}`} onClick={() => setSelectedMode(mode.id)}><span className="mode-icon">{mode.icon}</span><span><strong>{mode.name}</strong><small>{mode.description} · {mode.seats} seats</small></span><b>{fmt(mode.fare_paise)}</b></button>)}</div>{selectedMode && <button className="book-button" disabled={busy} onClick={() => void requestRide()}>{busy ? "Requesting…" : `Request ${modes.find((mode) => mode.id === selectedMode)?.name}`}</button>}<button className="text-button" onClick={() => { setStep("destination"); setRoute(null); }}>← Change destination</button></section>}
       {step === "tracking" && ride && pickup && destination && <section className="tracking"><div className="track-info"><span className="section-kicker">RIDE #{ride.id} · {ride.ride_type.replace("_", " ").toUpperCase()}</span><h2>{statuses[ride.status] ?? ride.status}</h2><p>{pickup.label} → {destination.label}</p>{ride.driver && <><p><strong>{ride.driver.name}</strong> · {ride.driver.car} · {ride.driver.plate}{ride.driver.rating_count > 0 && <> · ★ {ride.driver.rating?.toFixed(1)} ({ride.driver.rating_count})</>}</p>{ride.driver.latitude == null && <p className="gps-hint">Waiting for driver’s GPS signal…</p>}</>}{ride.status === "arrived" && <div className="otp-display"><small>Share this 4-digit OTP with driver</small><strong>{ride.otp ?? "····"}</strong></div>}{ride.status === "requested" && <p className="gps-hint">Vehicle appears on map when a driver accepts.</p>}<p>{fmt(ride.fare_paise)} · {ride.distance_km} km · {ride.duration_min} min</p>{ride.status === "completed" && <><div className="ride-review"><h3>Rate your driver</h3>{ride.reviewed || reviewed.includes(ride.id) ? <p>Thanks for rating this ride.</p> : reviewing === ride.id ? <div className="review-inline"><select aria-label="Driver rating" value={reviewRating} onChange={(e) => setReviewRating(Number(e.target.value))}>{[5, 4, 3, 2, 1].map((rating) => <option key={rating} value={rating}>{"★".repeat(rating)} ({rating})</option>)}</select><input aria-label="Review comment" placeholder="Share a few words" value={reviewComment} onChange={(e) => setReviewComment(e.target.value)} /><button onClick={() => void submitReview(ride.id)}>Submit review</button></div> : <button className="next-button" onClick={() => setReviewing(ride.id)}>Leave a review</button>}</div>{!['paid', 'demo_paid'].includes(ride.payment_status) ? <button className="book-button" onClick={() => payRide(ride.id)}>Pay fare · {fmt(ride.fare_paise)}</button> : <p className="payment-success-copy">Payment status: {ride.payment_status.replaceAll("_", " ")}</p>}</>}{["requested", "accepted", "arriving"].includes(ride.status) && <button className="text-button" disabled={busy} onClick={() => void cancelRide()}>Cancel ride</button>}{["completed", "cancelled"].includes(ride.status) && <button className="next-button" onClick={() => { setRide(null); setStep("pickup"); setDestination(null); setRoute(null); setApproachPath(null); }}>Book another ride</button>}</div><RideMap pickup={pickup} destination={destination} path={(["accepted", "arriving"].includes(ride.status) && approachPath) || route?.path || [[pickup.latitude, pickup.longitude], [destination.latitude, destination.longitude]]} driver={ride.driver} mode={ride.ride_type} /><small className="map-credit">© OpenStreetMap contributors</small></section>}
     </>}
-    {view === "history" && <section className="flow-card"><span className="section-kicker">YOUR JOURNEYS</span><h2>Ride history</h2>{history.map((item) => <article className="history-row" key={item.id}><div><strong>{item.pickup} → {item.destination}</strong><small>#{item.id} · {item.ride_type} · {item.status} · {item.payment_status}</small></div><b>{fmt(item.fare_paise)}</b>{item.status === "completed" && !["paid", "demo_paid"].includes(item.payment_status) && <button onClick={() => void payRide(item.id)}>Pay fare</button>}{item.status === "completed" && !item.reviewed && !reviewed.includes(item.id) && (reviewing === item.id ? <span className="review-inline"><select value={reviewRating} onChange={(e) => setReviewRating(Number(e.target.value))}>{[5, 4, 3, 2, 1].map((rating) => <option key={rating} value={rating}>{rating} stars</option>)}</select><input placeholder="Review" value={reviewComment} onChange={(e) => setReviewComment(e.target.value)} /><button onClick={() => void submitReview(item.id)}>Send</button></span> : <button onClick={() => setReviewing(item.id)}>Rate</button>)}</article>)}{!history.length && <p>No rides yet.</p>}</section>}
+    {view === "history" && <section className="data-panel history-panel">
+      <div className="history-title"><div><span className="section-kicker">YOUR JOURNEYS</span><h2>Ride history</h2><p>Find a past trip, review it, or book the route again.</p></div><button className="history-refresh" disabled={historyLoading} onClick={() => { setHistoryLoading(true); void api<Ride[]>("/api/rides", token).then(setHistory).catch((reason: Error) => setError(reason.message)).finally(() => setHistoryLoading(false)); }}>{historyLoading ? "Refreshing…" : "↻ Refresh"}</button></div>
+      <div className="history-stats"><article><small>Total trips</small><strong>{history.length}</strong></article><article><small>Completed</small><strong>{history.filter((item) => item.status === "completed").length}</strong></article><article><small>Paid</small><strong>{fmt(history.filter((item) => item.payment_status === "paid" || item.payment_status === "demo_paid").reduce((sum, item) => sum + item.fare_paise, 0))}</strong></article></div>
+      <div className="history-tools"><label className="history-search"><span aria-hidden="true">⌕</span><input aria-label="Search ride history" placeholder="Search pickup or destination" value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} />{historyQuery && <button aria-label="Clear history search" onClick={() => setHistoryQuery("")}>×</button>}</label><div className="history-filters" aria-label="Filter ride history">{(["all", "completed", "cancelled"] as const).map((filter) => <button key={filter} className={historyFilter === filter ? "selected" : ""} aria-pressed={historyFilter === filter} onClick={() => setHistoryFilter(filter)}>{filter === "all" ? "All trips" : filter === "completed" ? "Completed" : "Cancelled"}</button>)}</div></div>
+      {historyLoading && !history.length ? <div className="history-empty" aria-live="polite"><span className="history-loader" aria-hidden="true" />Loading your trips…</div> : visibleHistory.length ? <div className="history-list">{visibleHistory.map((item) => <article className="history-card" key={item.id}>
+        <div className="history-route-icon" aria-hidden="true">↗</div><div className="history-route"><strong>{item.pickup}<span>→</span>{item.destination}</strong><small>{item.created_at ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.created_at)) : `Ride #${item.id}`} · {item.ride_type.replaceAll("_", " ")}</small></div><span className={`history-status status-${item.status}`}>{item.status.replaceAll("_", " ")}</span><strong className="history-fare">{fmt(item.fare_paise)}</strong>
+        <div className="history-actions">{item.status === "completed" && !["paid", "demo_paid"].includes(item.payment_status) && <button onClick={() => payRide(item.id)}>Pay fare</button>}{item.status === "completed" && !item.reviewed && !reviewed.includes(item.id) && (reviewing === item.id ? <span className="review-inline"><select aria-label="Driver rating" value={reviewRating} onChange={(e) => setReviewRating(Number(e.target.value))}>{[5, 4, 3, 2, 1].map((rating) => <option key={rating} value={rating}>{rating} stars</option>)}</select><input aria-label="Review comment" placeholder="Review" value={reviewComment} onChange={(e) => setReviewComment(e.target.value)} /><button onClick={() => void submitReview(item.id)}>Send</button></span> : <button onClick={() => setReviewing(item.id)}>Rate ride</button>)}{item.pickup_latitude != null && item.pickup_longitude != null && item.destination_latitude != null && item.destination_longitude != null ? <button className="repeat-ride" disabled={busy} onClick={() => void repeatRide(item)}>Book again <span aria-hidden="true">↗</span></button> : <span className="history-no-map">Map points unavailable</span>}</div>
+      </article>)}</div> : <div className="history-empty"><span aria-hidden="true">⌕</span><strong>{history.length ? "No matching trips" : "Your next ride starts here"}</strong><p>{history.length ? "Try another place or filter." : "Your completed and upcoming trips will appear here."}</p>{history.length > 0 && (historyQuery || historyFilter !== "all") && <button onClick={() => { setHistoryQuery(""); setHistoryFilter("all"); }}>Clear filters</button>}</div>}
+    </section>}
     {view === "driver" && user.role === "driver" && <section className="flow-card"><span className="section-kicker">DRIVER SPACE</span><div className="driver-heading"><h2>Ride requests</h2><button className="next-button" onClick={async () => { const result = await api<{ available: boolean }>(`/api/drivers/availability?available=${!availability}`, token, { method: "PATCH" }); setAvailability(result.available); }}>{availability ? "● Available" : "○ Offline"}</button></div><p className="driver-rating">{driverRating.rating_count ? <>Your rating: <strong>★ {driverRating.rating?.toFixed(1)}</strong> from {driverRating.rating_count} ride{driverRating.rating_count === 1 ? "" : "s"}</> : "No ratings yet. Your rider reviews will appear here."}</p><p>Keep location enabled to share live position while online.</p>{driverRides.map((item) => <article className="driver-ride" key={item.id}><strong>{item.pickup} → {item.destination}</strong><small>#{item.id} · {item.ride_type} · {item.status} · {fmt(item.fare_paise)}</small>{item.status === "requested" && <button onClick={() => void driverAction(`/api/rides/${item.id}/status`, { status: "accepted" })}>Accept ride</button>}{item.status === "accepted" && <button onClick={() => void driverAction(`/api/rides/${item.id}/status`, { status: "arriving" })}>On the way</button>}{item.status === "arriving" && <button onClick={() => void driverAction(`/api/rides/${item.id}/status`, { status: "arrived" })}>I’ve arrived</button>}{item.status === "arrived" && <form className="search-form" onSubmit={(e) => { e.preventDefault(); void verifyOtp(item.id); }}><input required pattern="[0-9]{4}" maxLength={4} value={otpInput} onChange={(e) => setOtpInput(e.target.value)} placeholder="Rider OTP" /><button disabled={busy}>Verify & start</button></form>}{item.status === "in_progress" && <button onClick={() => void driverAction(`/api/rides/${item.id}/status`, { status: "completed" })}>Complete ride</button>}</article>)}{!driverRides.length && <p>No matching rides yet.</p>}</section>}
     <footer className="footer">Zoomo · Routes via OSRM · OpenStreetMap</footer>
     {mapPickerOpen && <MapPicker initialPoint={step === "pickup" ? pickup : destination} onCancel={() => setMapPickerOpen(false)} onConfirm={(point) => void confirmMapPoint(point)} />}
