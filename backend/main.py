@@ -31,6 +31,7 @@ TOKEN_SECRET = os.getenv("TOKEN_SECRET", "local-development-secret-change-before
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
 NOMINATIM_URL = os.getenv("NOMINATIM_URL", "https://nominatim.openstreetmap.org")
 PHOTON_URL = os.getenv("PHOTON_URL", "https://photon.komoot.io/api/")
+PHOTON_REVERSE_URL = os.getenv("PHOTON_REVERSE_URL", "https://photon.komoot.io/reverse")
 OSRM_URL = os.getenv("OSRM_URL", "https://router.project-osrm.org")
 MAPS_USER_AGENT = os.getenv("MAPS_USER_AGENT", "ZoomoRideApp/0.2 (contact: support@zoomo.example)")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
@@ -334,7 +335,7 @@ async def search_locations(q: str, _: User = Depends(current_user)):
         results = await nominatim("search", {"q": query, "format": "jsonv2", "addressdetails": "1", "limit": "5"})
     except httpx.HTTPError:
         raise HTTPException(502, "Location search is unavailable. Try again shortly.") from None
-    return [{"label": item["display_name"], "latitude": float(item["lat"]), "longitude": float(item["lon"])} for item in results]
+    return [{"label": item["display_name"], "latitude": float(item["lat"]), "longitude": float(item["lon"]), "address": item.get("address", {})} for item in results]
 
 
 suggestion_cache: dict[str, list[dict]] = {}
@@ -370,7 +371,11 @@ async def suggest_locations(q: str, _: User = Depends(current_user)):
                 value = properties.get(key)
                 if value and value not in parts:
                     parts.append(value)
-            results.append({"label": ", ".join(parts) or query, "longitude": coordinates[0], "latitude": coordinates[1]})
+            address = {"house_number" if key == "housenumber" else key: properties[key] for key in (
+                "housenumber", "street", "neighbourhood", "locality", "district",
+                "city", "county", "state", "postcode", "country",
+            ) if properties.get(key)}
+            results.append({"label": ", ".join(parts) or query, "longitude": coordinates[0], "latitude": coordinates[1], "address": address})
         if len(suggestion_cache) >= 1000:
             suggestion_cache.pop(next(iter(suggestion_cache)))
         suggestion_cache[cache_key] = results
@@ -379,11 +384,55 @@ async def suggest_locations(q: str, _: User = Depends(current_user)):
 
 @app.get("/api/locations/reverse")
 async def reverse_location(latitude: float, longitude: float, _: User = Depends(current_user)):
+    address: dict[str, object] = {}
+    label = ""
+    source = "coordinates"
     try:
-        result = await nominatim("reverse", {"lat": str(latitude), "lon": str(longitude), "format": "jsonv2"})
-    except httpx.HTTPError:
-        raise HTTPException(502, "Could not resolve this location. Search for it instead.") from None
-    return {"label": result.get("display_name", "Selected location"), "latitude": latitude, "longitude": longitude}
+        result = await nominatim("reverse", {
+            "lat": str(latitude), "lon": str(longitude), "format": "jsonv2",
+            "addressdetails": "1", "namedetails": "1", "zoom": "18",
+        })
+        raw_address = result.get("address") or {}
+        address = raw_address if isinstance(raw_address, dict) else {}
+        label = result.get("display_name", "")
+        if not label:
+            raise ValueError("No address found for map point")
+        source = "nominatim"
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+        # Public Nominatim can throttle or time out. Photon is an independent
+        # OSM geocoder, so try it before accepting the raw map coordinates.
+        try:
+            async with httpx.AsyncClient(timeout=7, headers={"User-Agent": MAPS_USER_AGENT}) as client:
+                response = await client.get(PHOTON_REVERSE_URL, params={"lat": latitude, "lon": longitude, "lang": "en"})
+                response.raise_for_status()
+                features = response.json().get("features", [])
+            if features:
+                properties = features[0].get("properties", {})
+                address = {
+                    ("house_number" if key == "housenumber" else key): properties[key] for key in (
+                        "name", "housenumber", "street", "locality", "district",
+                        "city", "county", "state", "postcode", "country",
+                    ) if properties.get(key)
+                }
+                label = ", ".join(dict.fromkeys(str(address[key]) for key in (
+                    "name", "housenumber", "street", "locality", "district",
+                    "city", "county", "state", "postcode", "country",
+                ) if address.get(key)))
+                source = "photon"
+        except (httpx.HTTPError, ValueError, TypeError, KeyError, AttributeError):
+            pass
+
+    # Keep map selection usable during geocoder outages. The exact pin
+    # coordinates still work for route estimates and ride requests.
+    if not label:
+        label = f"Map pin near {latitude:.5f}, {longitude:.5f}"
+    return {
+        "label": label,
+        "latitude": latitude,
+        "longitude": longitude,
+        "address": address,
+        "geocoding_source": source,
+    }
 
 
 async def fetch_route(origin_latitude: float, origin_longitude: float, destination_latitude: float, destination_longitude: float) -> dict:
