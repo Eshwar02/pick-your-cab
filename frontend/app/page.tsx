@@ -332,7 +332,7 @@ export default function Home() {
   const modes = route?.modes ?? [];
   const statuses: Record<string, string> = { requested: "Finding a nearby driver", accepted: "Driver accepted your ride", arriving: "Driver is on the way", arrived: "Driver arrived · share OTP", in_progress: "Ride in progress", completed: "Ride completed", cancelled: "Ride cancelled" };
   const visibleHistory = history.filter((item) => (historyFilter === "all" || item.status === historyFilter) && `${item.pickup} ${item.destination} ${item.ride_type}`.toLowerCase().includes(historyQuery.trim().toLowerCase()));
-  return <main className={`app-shell ${view === "ride" && user.role === "rider" && ["pickup", "destination", "modes"].includes(step) ? "booking-screen" : ""}`}>
+  return <main className={`app-shell ${view === "ride" && user.role === "rider" && ["pickup", "destination", "modes", "tracking"].includes(step) ? "booking-screen" : ""}`}>
     <header className="topbar"><Brand /><nav><button className={view === "ride" ? "active" : ""} onClick={() => setView("ride")}>Book ride</button>{user.role === "rider" ? <button onClick={() => setView("history")}>History</button> : <button onClick={() => setView("driver")}>Driver</button>}</nav><div className="profile-button">{user.name}<button onClick={logout}>Sign out</button></div></header>
     {error && <p className="form-error" role="alert">{error}</p>}
     {paymentNotice && <p className="payment-notice" role="status">{paymentNotice}</p>}
