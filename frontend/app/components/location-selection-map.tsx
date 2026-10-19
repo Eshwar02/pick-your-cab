@@ -9,12 +9,16 @@ export default function LocationSelectionMap({
   pickup,
   destination,
   preview,
+  path,
+  interactive = true,
   onSelect,
 }: {
   activeStep: "pickup" | "destination";
   pickup: MapPlace | null;
   destination: MapPlace | null;
   preview: MapPlace | null;
+  path?: [number, number][];
+  interactive?: boolean;
   onSelect: (point: { latitude: number; longitude: number }) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
@@ -22,12 +26,13 @@ export default function LocationSelectionMap({
   const pickupMarker = useRef<import("leaflet").Marker | null>(null);
   const destinationMarker = useRef<import("leaflet").Marker | null>(null);
   const previewMarker = useRef<import("leaflet").Marker | null>(null);
+  const routeLine = useRef<import("leaflet").Polyline | null>(null);
   const selectionCallback = useRef(onSelect);
-  const currentPlaces = useRef({ activeStep, pickup, destination, preview });
+  const currentPlaces = useRef({ activeStep, pickup, destination, preview, interactive });
   const [hovering, setHovering] = useState(false);
 
   useEffect(() => { selectionCallback.current = onSelect; }, [onSelect]);
-  useEffect(() => { currentPlaces.current = { activeStep, pickup, destination, preview }; }, [activeStep, pickup, destination, preview]);
+  useEffect(() => { currentPlaces.current = { activeStep, pickup, destination, preview, interactive }; }, [activeStep, pickup, destination, preview, interactive]);
 
   useEffect(() => {
     let disposed = false;
@@ -44,6 +49,7 @@ export default function LocationSelectionMap({
       }).addTo(activeMap);
       map.current = activeMap;
       activeMap.on("click", (event: import("leaflet").LeafletMouseEvent) => {
+        if (!currentPlaces.current.interactive) return;
         const symbol = currentPlaces.current.activeStep === "pickup" ? "●" : "◆";
         const iconClass = currentPlaces.current.activeStep === "pickup" ? "selection-pickup-icon" : "selection-drop-icon";
         const icon = L.divIcon({ className: `zoomo-leaflet-icon ${iconClass}`, html: `<span aria-hidden="true">${symbol}</span>`, iconSize: [36, 42], iconAnchor: [18, 37] });
@@ -89,16 +95,27 @@ export default function LocationSelectionMap({
       syncMarker(pickupMarker, pickup, "pickup");
       syncMarker(destinationMarker, destination, "drop");
       syncMarker(previewMarker, preview, "preview");
+      if (path && path.length > 1) {
+        if (routeLine.current) routeLine.current.setLatLngs(path);
+        else routeLine.current = L.polyline(path, { color: "#d2a700", weight: 5, opacity: 0.9, lineCap: "round", lineJoin: "round" }).addTo(currentMap);
+        const boundsPoints: [number, number][] = [...path];
+        if (pickup) boundsPoints.push([pickup.latitude, pickup.longitude]);
+        if (destination) boundsPoints.push([destination.latitude, destination.longitude]);
+        currentMap.fitBounds(L.latLngBounds(boundsPoints), { padding: [70, 70], maxZoom: 15, animate: true, duration: 0.55 });
+      } else if (routeLine.current) {
+        routeLine.current.remove();
+        routeLine.current = null;
+      }
       if (preview) currentMap.flyTo([preview.latitude, preview.longitude], Math.max(currentMap.getZoom(), 16), { duration: 0.45 });
     });
     return () => { disposed = true; };
-  }, [pickup, destination, preview]);
+  }, [pickup, destination, preview, path]);
 
   return (
-    <div className="selection-map-wrap" onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)}>
-      <div className="selection-map-canvas" ref={host} aria-label="Map. Click to choose the active location." />
-      {hovering && <div className="map-hover-hint" role="status"><span aria-hidden="true">⌖</span>Select {activeStep === "pickup" ? "pickup" : "drop-off"} location on map</div>}
-      <div className="selection-map-legend"><span><i className="legend-pickup" />Pickup</span><span><i className="legend-drop" />Drop-off</span><small>Click map to move active pin</small></div>
+    <div className="selection-map-wrap" onMouseEnter={() => interactive && setHovering(true)} onMouseLeave={() => setHovering(false)}>
+      <div className="selection-map-canvas" ref={host} aria-label={interactive ? "Map. Click to choose the active location." : "Map showing selected route."} />
+      {interactive && hovering && <div className="map-hover-hint" role="status"><span aria-hidden="true">⌖</span>Select {activeStep === "pickup" ? "pickup" : "drop-off"} location on map</div>}
+      <div className="selection-map-legend"><span><i className="legend-pickup" />Pickup</span><span><i className="legend-drop" />Drop-off</span><small>{interactive ? "Click map to move active pin" : "Estimated route"}</small></div>
     </div>
   );
 }
