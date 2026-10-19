@@ -32,7 +32,7 @@ function next(){
   b.classList.add('on');a.classList.remove('on');a.classList.add('out');
   setTimeout(function(){a.style.transition='none';a.classList.remove('out');void a.getBoundingClientRect();a.style.transition='';lock=false},900);
 }
-if(!window.matchMedia('(prefers-reduced-motion: reduce)').matches){setInterval(next,3200)}
+if(!window.matchMedia('(prefers-reduced-motion: reduce)').matches){var pace=new URLSearchParams(window.location.search).get('mode')==='loader'?1300:3200;setInterval(next,pace)}
 root.addEventListener('mouseenter',next);root.addEventListener('click',next);
 root.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();next()}});
 })();

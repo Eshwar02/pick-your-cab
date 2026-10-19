@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { Brand } from "./components/brand";
+import { LoadingScreen } from "./components/loading-screen";
 import { clearSession, readSessionToken, readSessionUser, saveSession } from "./lib/session";
 
 const MapPicker = dynamic(() => import("./components/map-picker"), { ssr: false });
@@ -31,6 +32,7 @@ export default function Home() {
   const router = useRouter();
   const [token, setToken] = useState("");
   const [user, setUser] = useState<User | null>(null);
+  const [sessionLoading, setSessionLoading] = useState(false);
   const [register, setRegister] = useState(false);
   const [authError, setAuthError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
@@ -70,24 +72,54 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [view, setView] = useState<"ride" | "history" | "driver">("ride");
 
+  const loadAccountDetails = useCallback(async (account: User, authToken: string): Promise<boolean> => {
+    if (account.role === "rider") {
+      const [rides] = await Promise.allSettled([api<Ride[]>("/api/rides", authToken)]);
+      if (rides.status === "fulfilled") setHistory(rides.value);
+      return rides.status === "rejected";
+    }
+    const [rides, profile] = await Promise.allSettled([
+      api<Ride[]>("/api/drivers/rides", authToken),
+      api<{ available: boolean; rating: number | null; rating_count: number }>("/api/drivers/me", authToken),
+    ]);
+    if (rides.status === "fulfilled") setDriverRides(rides.value);
+    if (profile.status === "fulfilled") {
+      setAvailability(profile.value.available);
+      setDriverRating({ rating: profile.value.rating, rating_count: profile.value.rating_count });
+    }
+    return rides.status === "rejected" || profile.status === "rejected";
+  }, []);
+
   useEffect(() => {
     const saved = readSessionToken();
     if (!saved) return;
-    queueMicrotask(() => setToken(saved));
     const cachedUser = readSessionUser();
-    if (cachedUser) queueMicrotask(() => setUser(cachedUser));
-    api<User>("/api/auth/me", saved).then((current) => {
-      setUser(current);
-      saveSession(saved, current);
-    }).catch((reason) => {
-      if (reason instanceof ApiError && reason.status === 401) {
-        clearSession();
-        setToken("");
-        setUser(null);
+    let active = true;
+    queueMicrotask(() => { if (active) setSessionLoading(true); });
+    void (async () => {
+      try {
+        const current = await api<User>("/api/auth/me", saved);
+        const detailsFailed = await loadAccountDetails(current, saved);
+        if (!active) return;
+        saveSession(saved, current);
+        setToken(saved); setUser(current); setView(current.role === "driver" ? "driver" : "ride");
+        if (detailsFailed) setError("Some account details could not load. Refresh to try again.");
+      } catch (reason) {
+        if (!active) return;
+        if (reason instanceof ApiError && reason.status === 401) {
+          clearSession(); setAuthError("Your saved session ended. Sign in to continue.");
+        } else if (cachedUser) {
+          setToken(saved); setUser(cachedUser);
+          setError("Connection unavailable. Showing your saved account.");
+        } else {
+          setAuthError(reason instanceof Error ? reason.message : "Could not load your account.");
+        }
+      } finally {
+        if (active) setSessionLoading(false);
       }
-      // Keep the cached session through temporary network/API outages.
-    });
-  }, []);
+    })();
+    return () => { active = false; };
+  }, [loadAccountDetails]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -160,7 +192,10 @@ export default function Home() {
     try {
       const result = await api<{ token: string; user: User }>(`/api/auth/${register ? "register" : "login"}`, undefined, { method: "POST", body: JSON.stringify({ name, email, password, role, vehicle, plate, ride_type: driverMode }) });
       saveSession(result.token, result.user);
-      setToken(result.token); setUser(result.user);
+      if (await loadAccountDetails(result.user, result.token)) {
+        setError("Signed in. Some account details could not load; refresh to try again.");
+      }
+      setToken(result.token); setUser(result.user); setView(result.user.role === "driver" ? "driver" : "ride");
     } catch (reason) { setAuthError(reason instanceof Error ? reason.message : "Authentication failed"); }
     finally { setAuthBusy(false); }
   }
@@ -282,9 +317,17 @@ export default function Home() {
     setToken(""); setUser(null); setRide(null); setHistory([]); setDriverRides([]); setHistoryQuery(""); setHistoryFilter("all"); setPickup(null); setDestination(null); setStep("pickup"); setView("ride");
   }
 
-  if (!user) return <main className="auth-gate"><div className="auth-card"><Brand /><span className="section-kicker">YOUR CITY, YOUR RIDE</span><h1>{register ? "Create your account" : "Welcome back"}</h1><p>Sign in to book rides. No guest access.</p><form onSubmit={submitAuth}>
-    {register && <><label>Name<input required minLength={2} value={name} onChange={(e) => setName(e.target.value)} /></label><label>Account type<select value={role} onChange={(e) => setRole(e.target.value as "rider" | "driver")}><option value="rider">Rider</option><option value="driver">Driver</option></select></label>{role === "driver" && <><label>Vehicle<input required value={vehicle} onChange={(e) => setVehicle(e.target.value)} placeholder="Vehicle model" /></label><label>Plate number<input required value={plate} onChange={(e) => setPlate(e.target.value)} /></label><label>Ride category<select value={driverMode} onChange={(e) => setDriverMode(e.target.value)}>{["auto", "bike", "cab", "maxi_cab"].map((mode) => <option key={mode} value={mode}>{mode.replace("_", " ")}</option>)}</select></label></>}</>}
-    <label>Email<input required type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></label><label>Password<input required type="password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} /></label>{authError && <p className="form-error">{authError}</p>}<button className="book-button" disabled={authBusy}>{authBusy ? "Please wait…" : register ? "Create account" : "Sign in"}</button></form><button className="text-button" onClick={() => { setRegister(!register); setAuthError(""); }}>{register ? "Have account? Sign in" : "New here? Create account"}</button></div></main>;
+  if (!user) return <main className="auth-gate">
+    <div className="auth-card" aria-hidden={authBusy || sessionLoading} inert={authBusy || sessionLoading}>
+      <Brand /><span className="section-kicker">YOUR CITY, YOUR RIDE</span><h1>{register ? "Create your account" : "Welcome back"}</h1><p>Sign in to book rides. No guest access.</p>
+      <form onSubmit={submitAuth}>
+        {register && <><label>Name<input required minLength={2} value={name} onChange={(e) => setName(e.target.value)} /></label><label>Account type<select value={role} onChange={(e) => setRole(e.target.value as "rider" | "driver")}><option value="rider">Rider</option><option value="driver">Driver</option></select></label>{role === "driver" && <><label>Vehicle<input required value={vehicle} onChange={(e) => setVehicle(e.target.value)} placeholder="Vehicle model" /></label><label>Plate number<input required value={plate} onChange={(e) => setPlate(e.target.value)} /></label><label>Ride category<select value={driverMode} onChange={(e) => setDriverMode(e.target.value)}>{["auto", "bike", "cab", "maxi_cab"].map((mode) => <option key={mode} value={mode}>{mode.replace("_", " ")}</option>)}</select></label></>}</>}
+        <label>Email<input required type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></label><label>Password<input required type="password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} /></label>{authError && <p className="form-error" role="alert">{authError}</p>}<button className="book-button" disabled={authBusy || sessionLoading}>{authBusy || sessionLoading ? "Loading your account…" : register ? "Create account" : "Sign in"}</button>
+      </form>
+      <button className="text-button" disabled={authBusy || sessionLoading} onClick={() => { setRegister(!register); setAuthError(""); }}>{register ? "Have account? Sign in" : "New here? Create account"}</button>
+    </div>
+    {(authBusy || sessionLoading) && <LoadingScreen message={sessionLoading ? "Loading your account…" : register ? "Creating your account…" : "Signing you in…"} />}
+  </main>;
 
   const modes = route?.modes ?? [];
   const statuses: Record<string, string> = { requested: "Finding a nearby driver", accepted: "Driver accepted your ride", arriving: "Driver is on the way", arrived: "Driver arrived · share OTP", in_progress: "Ride in progress", completed: "Ride completed", cancelled: "Ride cancelled" };
