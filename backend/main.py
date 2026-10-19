@@ -33,7 +33,6 @@ GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
 NOMINATIM_URL = os.getenv("NOMINATIM_URL", "https://nominatim.openstreetmap.org")
 PHOTON_URL = os.getenv("PHOTON_URL", "https://photon.komoot.io/api/")
 PHOTON_REVERSE_URL = os.getenv("PHOTON_REVERSE_URL", "https://photon.komoot.io/reverse")
-OVERPASS_URL = os.getenv("OVERPASS_URL", "https://overpass-api.de/api/interpreter")
 OSRM_URL = os.getenv("OSRM_URL", "https://router.project-osrm.org")
 MAPS_USER_AGENT = os.getenv("MAPS_USER_AGENT", "ZoomoRideApp/0.2 (contact: support@zoomo.example)")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
@@ -342,8 +341,6 @@ async def search_locations(q: str, _: User = Depends(current_user)):
 
 suggestion_cache: dict[str, list[dict]] = {}
 suggestion_lock = asyncio.Lock()
-nearby_roads_cache: dict[tuple[float, float], tuple[float, list[list[list[float]]]]] = {}
-nearby_roads_lock = asyncio.Lock()
 
 
 @app.get("/api/locations/suggest")
@@ -437,55 +434,6 @@ async def reverse_location(latitude: float, longitude: float, _: User = Depends(
         "address": address,
         "geocoding_source": source,
     }
-
-
-@app.get("/api/locations/nearby-roads")
-async def nearby_roads(latitude: float, longitude: float, _: User = Depends(current_user)):
-    cache_key = (round(latitude, 3), round(longitude, 3))
-    cached = nearby_roads_cache.get(cache_key)
-    if cached and time.monotonic() - cached[0] < 300:
-        return {"roads": cached[1]}
-    async with nearby_roads_lock:
-        cached = nearby_roads_cache.get(cache_key)
-        if cached and time.monotonic() - cached[0] < 300:
-            return {"roads": cached[1]}
-        query = f"""[out:json][timeout:10];
-way(around:1000,{latitude},{longitude})[highway~\"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service)$\"];
-out geom;"""
-        try:
-            async with httpx.AsyncClient(timeout=12, headers={"User-Agent": MAPS_USER_AGENT}) as client:
-                response = await client.post(OVERPASS_URL, data={"data": query})
-                response.raise_for_status()
-                ways = response.json().get("elements", [])
-        except (httpx.HTTPError, ValueError, TypeError, AttributeError):
-            raise HTTPException(502, "Nearby road data is temporarily unavailable") from None
-
-        roads: list[list[list[float]]] = []
-        for way in ways:
-            line: list[list[float]] = []
-            for node in way.get("geometry", []):
-                lat, lon = float(node["lat"]), float(node["lon"])
-                # Clip each way to a local radius so the client receives only
-                # nearby drivable geometry, never rail or pedestrian paths.
-                north = (lat - latitude) * 111_320
-                east = (lon - longitude) * 111_320 * max(0.2, abs(math.cos(latitude * math.pi / 180)))
-                if north * north + east * east <= 1_150 * 1_150:
-                    line.append([lat, lon])
-                elif len(line) >= 2:
-                    roads.append(line)
-                    line = []
-                else:
-                    line = []
-            if len(line) >= 2:
-                roads.append(line)
-            if len(roads) >= 180:
-                break
-        if not roads:
-            raise HTTPException(404, "No nearby drivable roads found")
-        if len(nearby_roads_cache) >= 300:
-            nearby_roads_cache.pop(next(iter(nearby_roads_cache)))
-        nearby_roads_cache[cache_key] = (time.monotonic(), roads)
-        return {"roads": roads}
 
 
 async def fetch_route(origin_latitude: float, origin_longitude: float, destination_latitude: float, destination_longitude: float) -> dict:
@@ -763,6 +711,29 @@ def driver_me(db: Session = Depends(get_db), user: User = Depends(current_user))
     rating_count = db.scalar(select(func.count(Review.id)).join(Ride, Review.ride_id == Ride.id).where(Ride.driver_id == driver.id)) or 0
     return {"available": driver.available, "name": driver.name, "car": driver.car, "plate": driver.plate,
             "rating": driver.rating if rating_count else None, "rating_count": rating_count}
+
+
+@app.get("/api/drivers/nearby")
+def nearby_drivers(latitude: float, longitude: float, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    if user.role != "rider":
+        raise HTTPException(403, "Rider account required")
+    drivers = db.scalars(select(Driver).where(
+        Driver.available.is_(True), Driver.latitude.is_not(None), Driver.longitude.is_not(None),
+    )).all()
+    nearby = []
+    for driver in drivers:
+        lat_delta = math.radians(driver.latitude - latitude)
+        lon_delta = math.radians(driver.longitude - longitude)
+        arc = math.sin(lat_delta / 2) ** 2 + math.cos(math.radians(latitude)) * math.cos(math.radians(driver.latitude)) * math.sin(lon_delta / 2) ** 2
+        distance_km = 6371 * 2 * math.atan2(math.sqrt(arc), math.sqrt(1 - arc))
+        if distance_km <= 3:
+            nearby.append({
+                "id": driver.id, "name": driver.name, "car": driver.car,
+                "plate": driver.plate, "ride_type": driver.ride_type,
+                "rating": driver.rating, "latitude": driver.latitude,
+                "longitude": driver.longitude, "distance_km": round(distance_km, 2),
+            })
+    return sorted(nearby, key=lambda item: item["distance_km"])
 
 
 @app.patch("/api/drivers/availability")

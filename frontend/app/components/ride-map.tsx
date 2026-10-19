@@ -14,6 +14,7 @@ type RideMapProps = {
   searching?: boolean;
   cancelled?: boolean;
 };
+type NearbyDriver = { id: number; name: string; car: string; plate: string; ride_type: string; rating: number | null; latitude: number; longitude: number; distance_km: number };
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const vehicleIcons: Record<string, string> = {
@@ -22,33 +23,6 @@ const vehicleIcons: Record<string, string> = {
   cab: '<svg viewBox="0 0 36 36" aria-hidden="true"><path d="M11 3h14l5 6v18l-5 6H11l-5-6V9z" fill="#f1c533" stroke="#28313a" stroke-width="2.5" stroke-linejoin="round"/><path d="M10 11h16v6H10zM10 21h16v6H10z" fill="#d8eff7" stroke="#28313a" stroke-width="1.7"/><path d="M11 3h14" stroke="#28313a" stroke-width="2"/></svg>',
   maxi_cab: '<svg viewBox="0 0 36 36" aria-hidden="true"><rect x="8" y="2" width="20" height="32" rx="6" fill="#f1c533" stroke="#28313a" stroke-width="2.5"/><path d="M11 7h14v7H11zM11 17h14v8H11z" fill="#d8eff7" stroke="#28313a" stroke-width="1.6"/><path d="M12 29h12" stroke="#28313a" stroke-width="2" stroke-linecap="round"/></svg>',
 };
-const vehicleLabels: Record<string, string> = { auto: "Auto", bike: "Bike", cab: "Cab", maxi_cab: "Maxi cab" };
-const tamilDriverNames = ["அருண்", "கார்த்திக்", "மீனா", "சரவணன்", "காவ்யா", "பிரபு", "திவ்யா", "விஜய்", "லதா", "முருகன்", "நந்தினி", "ரமேஷ்", "யாழினி", "செல்வம்", "அனிதா", "மணிகண்டன்", "பிரியா", "சுரேஷ்", "கீர்த்தனா", "பாலா"];
-const mockVehicles = Array.from({ length: 20 }, (_, index) => ({
-  name: tamilDriverNames[index],
-  mode: (["auto", "bike", "cab", "maxi_cab"] as const)[index % 4],
-  phase: ((index * 47) % 360) * Math.PI / 180,
-  cycleSeconds: 30 + (index * 17) % 35,
-}));
-
-function roadPosition(path: [number, number][], progress: number): [number, number] {
-  if (path.length < 2) return path[0] ?? [13.0827, 80.2707];
-  const distances = [0];
-  for (let index = 1; index < path.length; index += 1) {
-    const latitudeKm = (path[index][0] - path[index - 1][0]) * 111.32;
-    const longitudeKm = (path[index][1] - path[index - 1][1]) * 111.32 * Math.cos(path[index][0] * Math.PI / 180);
-    distances.push(distances[index - 1] + Math.hypot(latitudeKm, longitudeKm));
-  }
-  const target = (distances.at(-1) ?? 0) * Math.max(0, Math.min(1, progress));
-  let segment = 1;
-  while (segment < distances.length - 1 && distances[segment] < target) segment += 1;
-  const fraction = (target - distances[segment - 1]) / (distances[segment] - distances[segment - 1] || 1);
-  return [
-    path[segment - 1][0] + (path[segment][0] - path[segment - 1][0]) * fraction,
-    path[segment - 1][1] + (path[segment][1] - path[segment - 1][1]) * fraction,
-  ];
-}
-
 function distanceFromPickupKm(pickup: Place, position: [number, number]) {
   const radians = Math.PI / 180;
   const latitudeDelta = (position[0] - pickup.latitude) * radians;
@@ -68,10 +42,11 @@ export default function RideMap({ pickup, destination, path, token, driver, mode
   const pickupMarker = useRef<import("leaflet").Marker | null>(null);
   const destinationMarker = useRef<import("leaflet").Marker | null>(null);
   const driverMarker = useRef<import("leaflet").Marker | null>(null);
-  const mockDriverMarkers = useRef<import("leaflet").Marker[]>([]);
+  const nearbyDriverMarkers = useRef<Map<number, import("leaflet").Marker>>(new Map());
   const routeLine = useRef<import("leaflet").Polyline | null>(null);
   const routeFlowLine = useRef<import("leaflet").Polyline | null>(null);
-  const [nearbyRoads, setNearbyRoads] = useState<[number, number][][] | null>(null);
+  const [nearbyDrivers, setNearbyDrivers] = useState<NearbyDriver[]>([]);
+  const searchCenter = useRef<[number, number] | null>(null);
   const initialPickup = useRef(pickup);
   const initialDestination = useRef(destination);
 
@@ -97,7 +72,7 @@ export default function RideMap({ pickup, destination, path, token, driver, mode
       pickupMarker.current = null;
       destinationMarker.current = null;
       driverMarker.current = null;
-      mockDriverMarkers.current = [];
+      nearbyDriverMarkers.current.clear();
       routeLine.current = null;
       routeFlowLine.current = null;
     };
@@ -106,25 +81,27 @@ export default function RideMap({ pickup, destination, path, token, driver, mode
   useEffect(() => {
     let active = true;
     if (!searching) {
-      queueMicrotask(() => { if (active) setNearbyRoads(null); });
+      queueMicrotask(() => { if (active) setNearbyDrivers([]); });
       return () => { active = false; };
     }
-    queueMicrotask(() => { if (active) setNearbyRoads(null); });
     const params = new URLSearchParams({ latitude: String(pickup.latitude), longitude: String(pickup.longitude) });
-    void fetch(`${API}/api/locations/nearby-roads?${params}`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(async (response) => {
-        const body = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error("Nearby roads unavailable");
-        return (body.roads ?? []) as [number, number][][];
-      })
-      .then((roads) => { if (active) setNearbyRoads(roads); })
-      .catch(() => { if (active) setNearbyRoads([]); });
-    return () => { active = false; };
+    const loadNearbyDrivers = () => {
+      void fetch(`${API}/api/drivers/nearby?${params}`, { headers: { Authorization: `Bearer ${token}` } })
+        .then(async (response) => {
+          const body = await response.json().catch(() => []);
+          if (!response.ok) throw new Error("Nearby drivers unavailable");
+          return body as NearbyDriver[];
+        })
+        .then((drivers) => { if (active) setNearbyDrivers(drivers); })
+        .catch(() => {});
+    };
+    loadNearbyDrivers();
+    const timer = window.setInterval(loadNearbyDrivers, 5000);
+    return () => { active = false; window.clearInterval(timer); };
   }, [pickup.latitude, pickup.longitude, searching, token]);
 
   useEffect(() => {
     let disposed = false;
-    let motionTimer: number | undefined;
     void import("leaflet").then((L) => {
       if (disposed || !map.current) return;
       pickupMarker.current?.setLatLng([pickup.latitude, pickup.longitude]);
@@ -149,48 +126,50 @@ export default function RideMap({ pickup, destination, path, token, driver, mode
           driverMarker.current.setLatLng([driver.latitude, driver.longitude]);
         }
       }
-      if (searching && driver?.latitude == null && path.length > 1 && !cancelled) {
-        const roadChoices = (nearbyRoads?.length ? nearbyRoads : [path]).filter((road) => road.length > 1);
-        if (mockDriverMarkers.current.length !== mockVehicles.length) {
-          mockDriverMarkers.current.forEach((marker) => marker.remove());
-          mockDriverMarkers.current = mockVehicles.map((vehicle, index) => {
-            const road = roadChoices[(index * 17) % roadChoices.length] ?? path;
-            const phase = ((vehicle.phase / (Math.PI * 2)) % 1 + 1) % 1;
-            const latLng = roadPosition(road, phase);
-            const icon = vehicleIcons[vehicle.mode];
-            return L.marker(latLng, { icon: L.divIcon({ className: "zoomo-leaflet-icon mock-vehicle-icon", html: `<span aria-label="Nearby ${vehicleLabels[vehicle.mode]}">${icon}</span>`, iconSize: [38, 38], iconAnchor: [19, 19] }) })
+      if (searching && driver?.latitude == null && !cancelled) {
+        const visibleIds = new Set<number>();
+        nearbyDrivers.forEach((nearbyDriver) => {
+          visibleIds.add(nearbyDriver.id);
+          const position: [number, number] = [nearbyDriver.latitude, nearbyDriver.longitude];
+          const icon = vehicleIcons[nearbyDriver.ride_type] ?? vehicleIcons.cab;
+          const detail = document.createElement("div");
+          detail.textContent = `${nearbyDriver.name} · ${nearbyDriver.car} · ${formatDistance(distanceFromPickupKm(pickup, position))} from pickup`;
+          let marker = nearbyDriverMarkers.current.get(nearbyDriver.id);
+          if (!marker) {
+            marker = L.marker(position, { icon: L.divIcon({ className: "zoomo-leaflet-icon driver-leaflet-icon", html: `<span aria-label="${nearbyDriver.ride_type} vehicle">${icon}</span>`, iconSize: [38, 38], iconAnchor: [19, 19] }) })
               .addTo(map.current!)
-              .bindTooltip(`${vehicle.name} · ${vehicleLabels[vehicle.mode]} · ${formatDistance(distanceFromPickupKm(pickup, latLng))} from pickup`, { direction: "top", offset: [0, -14] });
-          });
-        }
-        const startedAt = Date.now();
-        const moveVehicles = () => {
-          const elapsed = (Date.now() - startedAt) / 1000;
-          const roads = roadChoices.length ? roadChoices : [path];
-          mockVehicles.forEach((vehicle, index) => {
-            const road = roads[(index * 17) % roads.length] ?? path;
-            const cycle = ((elapsed / vehicle.cycleSeconds + vehicle.phase / (Math.PI * 2)) % 2 + 2) % 2;
-            const progress = cycle <= 1 ? cycle : 2 - cycle;
-            const position = roadPosition(road, progress);
-            const marker = mockDriverMarkers.current[index];
-            marker?.setLatLng(position);
-            marker?.setTooltipContent(`${vehicle.name} · ${vehicleLabels[vehicle.mode]} · ${formatDistance(distanceFromPickupKm(pickup, position))} from pickup`);
-          });
-        };
-        moveVehicles();
-        motionTimer = window.setInterval(moveVehicles, 350);
+              .bindTooltip(detail, { direction: "top", offset: [0, -14] });
+            nearbyDriverMarkers.current.set(nearbyDriver.id, marker);
+          } else {
+            marker.setLatLng(position);
+            marker.setTooltipContent(detail);
+          }
+        });
+        nearbyDriverMarkers.current.forEach((marker, id) => {
+          if (!visibleIds.has(id)) { marker.remove(); nearbyDriverMarkers.current.delete(id); }
+        });
       } else {
-        mockDriverMarkers.current.forEach((marker) => marker.remove());
-        mockDriverMarkers.current = [];
+        nearbyDriverMarkers.current.forEach((marker) => marker.remove());
+        nearbyDriverMarkers.current.clear();
       }
       const points: [number, number][] = [...path, [pickup.latitude, pickup.longitude], [destination.latitude, destination.longitude]];
       if (driver?.latitude != null && driver.longitude != null) points.push([driver.latitude, driver.longitude]);
-      if (cancelled) map.current!.setView([pickup.latitude, pickup.longitude], 16, { animate: true, duration: 0.55 });
-      else if (searching && driver?.latitude == null) map.current!.setView([pickup.latitude, pickup.longitude], 15, { animate: true, duration: 0.55 });
-      else map.current!.fitBounds(L.latLngBounds(points), { padding: [40, 40], maxZoom: 15, animate: true, duration: 0.55 });
+      if (cancelled) {
+        map.current!.setView([pickup.latitude, pickup.longitude], 16, { animate: true, duration: 0.55 });
+        searchCenter.current = null;
+      } else if (searching && driver?.latitude == null) {
+        const previous = searchCenter.current;
+        if (!previous || previous[0] !== pickup.latitude || previous[1] !== pickup.longitude) {
+          map.current!.setView([pickup.latitude, pickup.longitude], 15, { animate: true, duration: 0.55 });
+          searchCenter.current = [pickup.latitude, pickup.longitude];
+        }
+      } else {
+        searchCenter.current = null;
+        map.current!.fitBounds(L.latLngBounds(points), { padding: [40, 40], maxZoom: 15, animate: true, duration: 0.55 });
+      }
     });
-    return () => { disposed = true; if (motionTimer) window.clearInterval(motionTimer); };
-  }, [pickup, destination, pickup.latitude, pickup.longitude, destination.latitude, destination.longitude, path, nearbyRoads, driver?.latitude, driver?.longitude, mode, searching, cancelled]);
+    return () => { disposed = true; };
+  }, [pickup, destination, pickup.latitude, pickup.longitude, destination.latitude, destination.longitude, path, nearbyDrivers, driver?.latitude, driver?.longitude, mode, searching, cancelled]);
 
-  return <div className="ride-map" ref={host} aria-label="OpenStreetMap route map">{searching && <div className="mock-driver-banner" role="status"><span className="mock-driver-pulse" />Finding your driver · 20 nearby drivers</div>}</div>;
+  return <div className="ride-map" ref={host} aria-label="OpenStreetMap route map">{searching && <div className="nearby-driver-banner" role="status"><span className="nearby-driver-pulse" />Searching nearby drivers</div>}</div>;
 }
