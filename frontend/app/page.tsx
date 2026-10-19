@@ -7,7 +7,7 @@ import { Brand } from "./components/brand";
 import { LoadingScreen } from "./components/loading-screen";
 import { clearSession, readSessionToken, readSessionUser, saveSession } from "./lib/session";
 
-const MapPicker = dynamic(() => import("./components/map-picker"), { ssr: false });
+const LocationSelectionMap = dynamic(() => import("./components/location-selection-map"), { ssr: false });
 const RideMap = dynamic(() => import("./components/ride-map"), { ssr: false });
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 type Place = { label: string; latitude: number; longitude: number };
@@ -48,12 +48,12 @@ export default function Home() {
   const [destination, setDestination] = useState<Place | null>(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Place[]>([]);
+  const [mapPreview, setMapPreview] = useState<Place | null>(null);
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [route, setRoute] = useState<Route | null>(null);
   const [approachPath, setApproachPath] = useState<[number, number][] | null>(null);
   const lastApproachFetch = useRef(0);
   const [selectedMode, setSelectedMode] = useState("");
-  const [mapPickerOpen, setMapPickerOpen] = useState(false);
   const [ride, setRide] = useState<Ride | null>(null);
   const [history, setHistory] = useState<Ride[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -140,7 +140,7 @@ export default function Home() {
     setError("");
     if (!navigator.geolocation) { setError("Location unavailable. Search pickup manually."); return; }
     navigator.geolocation.getCurrentPosition(async ({ coords }) => {
-      try { setPickup(await api<Place>(`/api/locations/reverse?latitude=${coords.latitude}&longitude=${coords.longitude}`, token)); }
+      try { const place = await api<Place>(`/api/locations/reverse?latitude=${coords.latitude}&longitude=${coords.longitude}`, token); setPickup(place); setMapPreview(place); }
       catch (reason) { setError(reason instanceof Error ? reason.message : "Could not find location"); }
     }, () => setError("Location permission denied. Search pickup manually."), { enableHighAccuracy: true, timeout: 12000 });
   }, [token]);
@@ -154,15 +154,15 @@ export default function Home() {
     queueMicrotask(() => { if (!stale) setSuggestionsLoading(true); });
     const timer = window.setTimeout(() => {
       void api<Place[]>(`/api/locations/suggest?q=${encodeURIComponent(query.trim())}`, token)
-        .then((places) => { if (!stale) setResults(places); })
-        .catch(() => { if (!stale) setResults([]); })
+      .then((places) => { if (!stale) { setResults(places); setMapPreview(places[0] ?? null); } })
+      .catch(() => { if (!stale) { setResults([]); setMapPreview(null); } })
         .finally(() => { if (!stale) setSuggestionsLoading(false); });
     }, 400);
     return () => { stale = true; window.clearTimeout(timer); };
   }, [query, step, token]);
 
   async function choosePlace(place: Place) {
-    setError(""); setResults([]); setQuery("");
+    setError(""); setResults([]); setQuery(""); setMapPreview(place);
     if (step === "pickup") { setPickup(place); return; }
     setDestination(place); setBusy(true);
     try {
@@ -175,7 +175,7 @@ export default function Home() {
   }
 
   async function confirmMapPoint(point: { latitude: number; longitude: number }) {
-    setMapPickerOpen(false); setBusy(true); setError("");
+    setBusy(true); setError("");
     try {
       const place = await api<Place>(`/api/locations/reverse?latitude=${point.latitude}&longitude=${point.longitude}`, token);
       await choosePlace(place);
@@ -184,7 +184,7 @@ export default function Home() {
   }
 
   function placeSearch(placeholder: string) {
-    return <div className="location-search"><div className="search-input-wrap"><span aria-hidden="true">⌕</span><input role="combobox" aria-autocomplete="list" aria-expanded={query.trim().length >= 3} aria-controls="location-suggestions" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={placeholder} autoComplete="off" />{query && <button type="button" aria-label="Clear search" onClick={() => setQuery("")}>×</button>}</div>{query.trim().length >= 3 && <div className="suggestion-list" id="location-suggestions" role="listbox">{suggestionsLoading ? <p className="suggestion-hint">Searching nearby places…</p> : results.length ? results.map((place) => <button role="option" aria-selected="false" className="place-result" key={`${place.latitude}-${place.longitude}`} onClick={() => void choosePlace(place)}><span className="suggestion-pin">⌖</span><span>{place.label}</span><b>↗</b></button>) : <p className="suggestion-hint">No matches. Try a nearby landmark or street.</p>}</div>}</div>;
+    return <div className="location-search"><div className="search-input-wrap"><span aria-hidden="true">⌕</span><input role="combobox" aria-autocomplete="list" aria-expanded={query.trim().length >= 3} aria-controls="location-suggestions" value={query} onChange={(event) => { setQuery(event.target.value); setMapPreview(null); }} placeholder={placeholder} autoComplete="off" />{query && <button type="button" aria-label="Clear search" onClick={() => { setQuery(""); setMapPreview(null); }}>×</button>}</div>{query.trim().length >= 3 && <div className="suggestion-list" id="location-suggestions" role="listbox">{suggestionsLoading ? <p className="suggestion-hint">Searching nearby places…</p> : results.length ? results.map((place) => <button role="option" aria-selected="false" className="place-result" key={`${place.latitude}-${place.longitude}`} onClick={() => void choosePlace(place)}><span className="suggestion-pin">⌖</span><span>{place.label}</span><b>↗</b></button>) : <p className="suggestion-hint">No matches. Try a nearby landmark or street.</p>}</div>}</div>;
   }
 
   async function submitAuth(event: FormEvent) {
@@ -338,8 +338,8 @@ export default function Home() {
     {paymentNotice && <p className="payment-notice" role="status">{paymentNotice}</p>}
     {view === "ride" && user.role === "rider" && <>
       {step !== "tracking" && <section className="hero"><div><span className="eyebrow">YOUR CITY, YOUR RIDE</span><h1>Good trips start <em>here.</em></h1><p>Clear routes. Real drivers. Upfront fares.</p></div></section>}
-      {step === "pickup" && <section className="flow-card"><span className="section-kicker">STEP 1 OF 3 · PICKUP</span><h2>Where should we pick you up?</h2><p>Allow location access or search for your current location.</p><button className="book-button" onClick={loadCurrentLocation}>◎ Use my current location</button><button className="map-pick-action" onClick={() => setMapPickerOpen(true)}>⌖ Choose pickup on map</button>{pickup && <div className="selected-place">✓ {pickup.label}<button onClick={() => setStep("destination")}>Continue →</button></div>}{placeSearch("Search pickup, street, or landmark")}{pickup && <button className="next-button" onClick={() => { setStep("destination"); setQuery(""); setResults([]); }}>Confirm pickup →</button>}</section>}
-      {step === "destination" && <section className="flow-card"><span className="section-kicker">STEP 2 OF 3 · DESTINATION</span><h2>Where are you going?</h2><p>Pickup: {pickup?.label}</p><button className="map-pick-action" onClick={() => setMapPickerOpen(true)}>⌖ Choose destination on map</button>{placeSearch("Search destination, street, or landmark")}<button className="text-button" onClick={() => setStep("pickup")}>← Change pickup</button></section>}
+      {step === "pickup" && <section className="location-layout"><div className="flow-card location-flow"><span className="section-kicker">STEP 1 OF 3 · PICKUP</span><h2>Where should we pick you up?</h2><p>Search an address or click the map to place your pickup pin.</p><button className="location-current-button" onClick={loadCurrentLocation}>◎ Use my current location</button>{pickup && <div className="selected-place">✓ {pickup.label}</div>}{placeSearch("Search pickup, street, or landmark")}{pickup && <button className="book-button location-continue" onClick={() => { setStep("destination"); setQuery(""); setResults([]); setMapPreview(null); }}>Continue to drop-off →</button>}</div><section className="selection-map-panel" aria-label="Select pickup location"><div className="selection-map-heading"><div><span className="section-kicker">LIVE MAP</span><strong>Choose pickup point</strong></div><span className="map-picker-pin" aria-hidden="true">⌖</span></div><LocationSelectionMap activeStep="pickup" pickup={pickup} destination={destination} preview={mapPreview} onSelect={(point) => void confirmMapPoint(point)} /></section></section>}
+      {step === "destination" && <section className="location-layout"><div className="flow-card location-flow"><span className="section-kicker">STEP 2 OF 3 · DROP-OFF</span><h2>Where are you going?</h2><p>Search a destination or click the map to move the drop-off pin.</p><div className="selected-place pickup-summary">● {pickup?.label}<button onClick={() => { setStep("pickup"); setQuery(""); setResults([]); setMapPreview(pickup); }}>Change pickup</button></div>{destination && <div className="selected-place">◆ {destination.label}</div>}{placeSearch("Search destination, street, or landmark")}{destination && <button className="book-button location-continue" disabled={busy} onClick={() => void choosePlace(destination)}>{busy ? "Checking route…" : "Confirm drop-off →"}</button>}</div><section className="selection-map-panel" aria-label="Select drop-off location"><div className="selection-map-heading"><div><span className="section-kicker">LIVE MAP</span><strong>Choose drop-off point</strong></div><span className="map-picker-pin" aria-hidden="true">⌖</span></div><LocationSelectionMap activeStep="destination" pickup={pickup} destination={destination} preview={mapPreview} onSelect={(point) => void confirmMapPoint(point)} /></section></section>}
       {step === "modes" && route && <section className="flow-card"><span className="section-kicker">STEP 3 OF 3 · CHOOSE RIDE</span><h2>Pick your ride</h2><p>{route.distance_km} km · about {route.duration_min} min</p><div className="mode-list">{modes.map((mode) => <button key={mode.id} className={`mode-option ${selectedMode === mode.id ? "selected" : ""}`} onClick={() => setSelectedMode(mode.id)}><span className="mode-icon">{mode.icon}</span><span><strong>{mode.name}</strong><small>{mode.description} · {mode.seats} seats</small></span><b>{fmt(mode.fare_paise)}</b></button>)}</div>{selectedMode && <button className="book-button" disabled={busy} onClick={() => void requestRide()}>{busy ? "Requesting…" : `Request ${modes.find((mode) => mode.id === selectedMode)?.name}`}</button>}<button className="text-button" onClick={() => { setStep("destination"); setRoute(null); }}>← Change destination</button></section>}
       {step === "tracking" && ride && pickup && destination && <section className="tracking"><div className="track-info"><span className="section-kicker">RIDE #{ride.id} · {ride.ride_type.replace("_", " ").toUpperCase()}</span><h2>{statuses[ride.status] ?? ride.status}</h2><p>{pickup.label} → {destination.label}</p>{ride.driver && <><p><strong>{ride.driver.name}</strong> · {ride.driver.car} · {ride.driver.plate}{ride.driver.rating_count > 0 && <> · ★ {ride.driver.rating?.toFixed(1)} ({ride.driver.rating_count})</>}</p>{ride.driver.latitude == null && <p className="gps-hint">Waiting for driver’s GPS signal…</p>}</>}{ride.status === "arrived" && <div className="otp-display"><small>Share this 4-digit OTP with driver</small><strong>{ride.otp ?? "····"}</strong></div>}{ride.status === "requested" && <p className="gps-hint">Vehicle appears on map when a driver accepts.</p>}<p>{fmt(ride.fare_paise)} · {ride.distance_km} km · {ride.duration_min} min</p>{ride.status === "completed" && <><div className="ride-review"><h3>Rate your driver</h3>{ride.reviewed || reviewed.includes(ride.id) ? <p>Thanks for rating this ride.</p> : reviewing === ride.id ? <div className="review-inline"><select aria-label="Driver rating" value={reviewRating} onChange={(e) => setReviewRating(Number(e.target.value))}>{[5, 4, 3, 2, 1].map((rating) => <option key={rating} value={rating}>{"★".repeat(rating)} ({rating})</option>)}</select><input aria-label="Review comment" placeholder="Share a few words" value={reviewComment} onChange={(e) => setReviewComment(e.target.value)} /><button onClick={() => void submitReview(ride.id)}>Submit review</button></div> : <button className="next-button" onClick={() => setReviewing(ride.id)}>Leave a review</button>}</div>{!['paid', 'demo_paid'].includes(ride.payment_status) ? <button className="book-button" onClick={() => payRide(ride.id)}>Pay fare · {fmt(ride.fare_paise)}</button> : <p className="payment-success-copy">Payment status: {ride.payment_status.replaceAll("_", " ")}</p>}</>}{["requested", "accepted", "arriving"].includes(ride.status) && <button className="text-button" disabled={busy} onClick={() => void cancelRide()}>Cancel ride</button>}{["completed", "cancelled"].includes(ride.status) && <button className="next-button" onClick={() => { setRide(null); setStep("pickup"); setDestination(null); setRoute(null); setApproachPath(null); }}>Book another ride</button>}</div><RideMap pickup={pickup} destination={destination} path={(["accepted", "arriving"].includes(ride.status) && approachPath) || route?.path || [[pickup.latitude, pickup.longitude], [destination.latitude, destination.longitude]]} driver={ride.driver} mode={ride.ride_type} /><small className="map-credit">© OpenStreetMap contributors</small></section>}
     </>}
@@ -354,6 +354,5 @@ export default function Home() {
     </section>}
     {view === "driver" && user.role === "driver" && <section className="flow-card"><span className="section-kicker">DRIVER SPACE</span><div className="driver-heading"><h2>Ride requests</h2><button className="next-button" onClick={async () => { const result = await api<{ available: boolean }>(`/api/drivers/availability?available=${!availability}`, token, { method: "PATCH" }); setAvailability(result.available); }}>{availability ? "● Available" : "○ Offline"}</button></div><p className="driver-rating">{driverRating.rating_count ? <>Your rating: <strong>★ {driverRating.rating?.toFixed(1)}</strong> from {driverRating.rating_count} ride{driverRating.rating_count === 1 ? "" : "s"}</> : "No ratings yet. Your rider reviews will appear here."}</p><p>Keep location enabled to share live position while online.</p>{driverRides.map((item) => <article className="driver-ride" key={item.id}><strong>{item.pickup} → {item.destination}</strong><small>#{item.id} · {item.ride_type} · {item.status} · {fmt(item.fare_paise)}</small>{item.status === "requested" && <button onClick={() => void driverAction(`/api/rides/${item.id}/status`, { status: "accepted" })}>Accept ride</button>}{item.status === "accepted" && <button onClick={() => void driverAction(`/api/rides/${item.id}/status`, { status: "arriving" })}>On the way</button>}{item.status === "arriving" && <button onClick={() => void driverAction(`/api/rides/${item.id}/status`, { status: "arrived" })}>I’ve arrived</button>}{item.status === "arrived" && <form className="search-form" onSubmit={(e) => { e.preventDefault(); void verifyOtp(item.id); }}><input required pattern="[0-9]{4}" maxLength={4} value={otpInput} onChange={(e) => setOtpInput(e.target.value)} placeholder="Rider OTP" /><button disabled={busy}>Verify & start</button></form>}{item.status === "in_progress" && <button onClick={() => void driverAction(`/api/rides/${item.id}/status`, { status: "completed" })}>Complete ride</button>}</article>)}{!driverRides.length && <p>No matching rides yet.</p>}</section>}
     <footer className="footer">Zoomo · Routes via OSRM · OpenStreetMap</footer>
-      {mapPickerOpen && <MapPicker initialPoint={step === "pickup" ? pickup : destination} purpose={step === "pickup" ? "pickup" : "drop-off"} token={token} onCancel={() => setMapPickerOpen(false)} onConfirm={(point) => void confirmMapPoint(point)} />}
   </main>;
 }
