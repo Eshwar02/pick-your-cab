@@ -61,9 +61,15 @@ export default function PaymentPage() {
     setBusy(true); setError("");
     try {
       const result = await request<{ url?: string; payment_status?: string; mode: string }>(`/api/rides/${rideId}/payment-intent`, token, { method: "POST" });
-      if (result.url) { window.location.assign(result.url); return; }
+      if (result.mode === "demo") throw new Error("Mock payments are disabled. Redeploy the API with STRIPE_SECRET_KEY configured.");
+      if (result.mode === "stripe" && result.url) {
+        const checkoutUrl = new URL(result.url);
+        if (checkoutUrl.protocol !== "https:") throw new Error("Stripe returned an invalid checkout link.");
+        window.location.assign(checkoutUrl.toString());
+        return;
+      }
+      if (result.mode !== "paid") throw new Error("Stripe did not return a checkout session. Check the API Stripe configuration.");
       await refreshRide(token, rideId);
-      if (result.mode === "demo") setReturnStatus("demo");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not start payment"); }
     finally { setBusy(false); }
   }
@@ -76,7 +82,7 @@ export default function PaymentPage() {
     finally { setBusy(false); }
   }
 
-  const paid = ride?.payment_status === "paid" || ride?.payment_status === "demo_paid";
+  const paid = ride?.payment_status === "paid";
   return (
     <main className="auth-gate">
       <section className="payment-card">
