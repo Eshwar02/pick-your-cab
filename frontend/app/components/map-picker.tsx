@@ -34,7 +34,7 @@ export default function MapPicker({
       if (!host.current || disposed) return;
       const center: [number, number] = initialPoint
         ? [initialPoint.latitude, initialPoint.longitude]
-        : [12.9716, 77.5946];
+        : [13.0827, 80.2707];
       const pickerMap = L.map(host.current, { zoomControl: true }).setView(center, initialPoint ? 15 : 12);
       L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
         maxZoom: 19,

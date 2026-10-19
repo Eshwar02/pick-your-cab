@@ -42,7 +42,7 @@ export default function LocationSelectionMap({
       if (!host.current || disposed) return;
       const { activeStep: step, pickup: currentPickup, destination: currentDestination, preview: currentPreview } = currentPlaces.current;
       const focus = currentPreview ?? (step === "pickup" ? currentPickup : currentDestination) ?? currentPickup ?? currentDestination;
-      const center: [number, number] = focus ? [focus.latitude, focus.longitude] : [12.9716, 77.5946];
+      const center: [number, number] = focus ? [focus.latitude, focus.longitude] : [13.0827, 80.2707];
       activeMap = L.map(host.current, { zoomControl: true, scrollWheelZoom: true }).setView(center, focus ? 15 : 12);
       L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
         maxZoom: 19,
