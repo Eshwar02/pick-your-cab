@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: cabby-api
+    name: zoomo-api
     runtime: python
     plan: free
     rootDir: backend

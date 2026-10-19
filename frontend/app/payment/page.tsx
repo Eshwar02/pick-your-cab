@@ -1,6 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import { Brand } from "../components/brand";
+import { readSessionToken } from "../lib/session";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 type Ride = { id: number; pickup: string; destination: string; status: string; fare_paise: number; payment_status: string };
@@ -32,15 +35,17 @@ export default function PaymentPage() {
   }, []);
 
   useEffect(() => {
-    const authToken = localStorage.getItem("cabby_token") || "";
-    const params = new URLSearchParams(window.location.search);
-    const id = Number(params.get("ride_id"));
-    setToken(authToken);
-    setReturnStatus(params.get("payment") || "");
-    if (!Number.isInteger(id) || id < 1) { setError("Ride not found. Return to Cabby and open a fare from your ride history."); return; }
-    setRideId(id);
-    if (!authToken) { setError("Sign in to view and pay for this ride."); return; }
-    void refreshRide(authToken, id).catch((reason: Error) => setError(reason.message));
+    void Promise.resolve().then(() => {
+      const authToken = readSessionToken() || "";
+      const params = new URLSearchParams(window.location.search);
+      const id = Number(params.get("ride_id"));
+      setToken(authToken);
+      setReturnStatus(params.get("payment") || "");
+      if (!Number.isInteger(id) || id < 1) { setError("Ride not found. Return to Zoomo and open a fare from your ride history."); return; }
+      setRideId(id);
+      if (!authToken) { setError("Sign in to view and pay for this ride."); return; }
+      void refreshRide(authToken, id).catch((reason: Error) => setError(reason.message));
+    });
   }, [refreshRide]);
 
   useEffect(() => {
@@ -75,7 +80,7 @@ export default function PaymentPage() {
   return (
     <main className="auth-gate">
       <section className="payment-card">
-        <a className="brand" href="/">✳ cabby</a>
+        <Brand />
         <span className="section-kicker">SECURE FARE PAYMENT</span>
         <h1>{paid ? "Payment complete" : returnStatus === "cancelled" ? "Payment cancelled" : returnStatus === "success" ? "Confirming payment" : "Ride payment"}</h1>
         {ride && <div className="payment-summary">
@@ -85,14 +90,14 @@ export default function PaymentPage() {
           <b>{money(ride.fare_paise)}</b>
           <small>Payment status: {ride.payment_status.replaceAll("_", " ")}</small>
         </div>}
-        {paid && <p className="payment-success-copy">Your payment is confirmed. You can return to Cabby ride history.</p>}
+        {paid && <p className="payment-success-copy">Your payment is confirmed. You can return to Zoomo ride history.</p>}
         {returnStatus === "success" && !paid && <p className="payment-help">Stripe returned successfully. Waiting for signed payment confirmation; this page checks status automatically.</p>}
         {returnStatus === "cancelled" && !paid && <p className="payment-help">No charge completed. Retry payment when ready.</p>}
         {error && <p className="form-error" role="alert">{error}</p>}
         {ride?.status !== "completed" && ride && <p className="payment-help">Payment opens after driver marks ride completed.</p>}
         {!paid && ride?.status === "completed" && returnStatus !== "success" && <button className="book-button" disabled={busy} onClick={() => void startPayment()}>{busy ? "Opening secure checkout…" : `Continue to Stripe · ${money(ride.fare_paise)}`}</button>}
         {returnStatus === "success" && !paid && <button className="next-button" disabled={busy} onClick={() => void checkStatus()}>{busy ? "Checking…" : "Check payment status"}</button>}
-        <a className="payment-back" href="/?view=history">Return to Cabby</a>
+        <Link className="payment-back" href="/?view=history">Return to Zoomo</Link>
         <p className="payment-secure-note">Card details handled securely by Stripe Checkout.</p>
       </section>
     </main>

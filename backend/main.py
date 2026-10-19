@@ -22,7 +22,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("SUPABASE_DATABASE_URL") or os.getenv("DATABASE_URL", "sqlite:///./cabby.db")
+DATABASE_URL = os.getenv("SUPABASE_DATABASE_URL") or os.getenv("DATABASE_URL", "sqlite:///./zoomo.db")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
 elif DATABASE_URL.startswith("postgresql://"):
@@ -32,7 +32,7 @@ GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
 NOMINATIM_URL = os.getenv("NOMINATIM_URL", "https://nominatim.openstreetmap.org")
 PHOTON_URL = os.getenv("PHOTON_URL", "https://photon.komoot.io/api/")
 OSRM_URL = os.getenv("OSRM_URL", "https://router.project-osrm.org")
-MAPS_USER_AGENT = os.getenv("MAPS_USER_AGENT", "CabbyRideApp/0.2 (contact: support@cabby.example)")
+MAPS_USER_AGENT = os.getenv("MAPS_USER_AGENT", "ZoomoRideApp/0.2 (contact: support@zoomo.example)")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 stripe.api_key = STRIPE_SECRET_KEY
@@ -180,7 +180,7 @@ class DriverStatusIn(BaseModel):
     status: Literal["accepted", "arriving", "arrived", "completed"]
 
 
-app = FastAPI(title="Cabby API", version="0.1.0", description="Ride booking MVP API")
+app = FastAPI(title="Zoomo API", version="0.1.0", description="Ride booking platform API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000").split(","),
@@ -560,7 +560,7 @@ def create_payment_intent(ride_id: int, db: Session = Depends(get_db), user: Use
     frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
     checkout = stripe.checkout.Session.create(
         mode="payment",
-        line_items=[{"price_data": {"currency": "inr", "product_data": {"name": f"Cabby ride #{ride.id}"}, "unit_amount": ride.fare_paise}, "quantity": 1}],
+        line_items=[{"price_data": {"currency": "inr", "product_data": {"name": f"Zoomo ride #{ride.id}"}, "unit_amount": ride.fare_paise}, "quantity": 1}],
         success_url=f"{frontend_url}/payment?payment=success&ride_id={ride.id}&session_id={{CHECKOUT_SESSION_ID}}",
         cancel_url=f"{frontend_url}/payment?payment=cancelled&ride_id={ride.id}",
         metadata={"ride_id": str(ride.id), "rider_id": str(user.id)},

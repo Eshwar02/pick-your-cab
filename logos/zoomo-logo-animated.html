@@ -1,0 +1,37 @@
+<!-- ZOOMO animated logo: paste this block anywhere in your page. Transparent background. -->
+<div id="zoomo-logo" tabindex="0" role="img" aria-label="ZOOMO animated logo" style="width:360px;max-width:100%;cursor:pointer;outline:none;background:transparent">
+<svg viewBox="0 0 360 190" style="width:100%;height:auto;display:block;overflow:hidden">
+<style>
+#zoomo-logo .o{stroke:#1B1B3A;stroke-width:4;stroke-linejoin:round;stroke-linecap:round}
+#zoomo-logo .veh{transform:translateX(-420px);transition:transform .8s cubic-bezier(.5,0,.3,1)}
+#zoomo-logo .veh.on{transform:none}
+#zoomo-logo .veh.out{transform:translateX(420px)}
+#zoomo-logo .wheel{transform-box:fill-box;transform-origin:center;animation:zl-spin .5s linear infinite}
+#zoomo-logo .bob{animation:zl-bob .35s ease-in-out infinite alternate}
+#zoomo-logo .puff{transform-box:fill-box;transform-origin:center;fill:#E3D9C8;stroke:#1B1B3A;stroke-width:2;opacity:0;animation:zl-puff 1.2s ease-out infinite}
+#zoomo-logo .road{animation:zl-road .5s linear infinite}
+@keyframes zl-spin{to{transform:rotate(360deg)}}
+@keyframes zl-bob{to{transform:translateY(-2px)}}
+@keyframes zl-puff{0%{opacity:0;transform:translate(0,0) scale(.3)}15%{opacity:.9}100%{opacity:0;transform:translate(-46px,-18px) scale(1.8)}}
+@keyframes zl-road{to{stroke-dashoffset:32}}
+@media (prefers-reduced-motion:reduce){#zoomo-logo .wheel,#zoomo-logo .puff,#zoomo-logo .road,#zoomo-logo .bob{animation:none}}
+</style>
+<line class="o" x1="0" y1="142" x2="360" y2="142"/>
+<line class="road" x1="0" y1="162" x2="360" y2="162" stroke="#1B1B3A" stroke-width="3" stroke-dasharray="18 14"/>
+<g class="veh"><g class="bob"><path class="o" fill="#19C3B1" d="M126 82 L140 56 L158 62 L148 84Z"/><path class="o" fill="none" d="M150 66 L186 74"/><circle class="o" cx="148" cy="46" r="11" fill="#FFD23F"/><rect x="150" y="41" width="10" height="8" rx="2" fill="#fff"/><rect class="o" x="86" y="110" width="30" height="9" rx="4.5" fill="#CFD3DC"/><path class="o" fill="#FF3D81" d="M112 104 Q120 84 150 88 L184 94 Q196 98 192 108 L170 118 L124 118Z"/><rect class="o" x="104" y="80" width="52" height="11" rx="5.5" fill="#1B1B3A"/><path class="o" fill="none" d="M210 122 L190 74 M180 72 L200 72"/><circle class="o" cx="196" cy="86" r="6" fill="#FFD23F"/></g><g class="wheel"><circle class="o" cx="110" cy="122" r="20" fill="#1B1B3A"/><circle cx="110" cy="122" r="11.6" fill="#E9EDF5"/><path d="M100 122H120M110 112V132" stroke="#1B1B3A" stroke-width="3"/><circle cx="117.2" cy="122" r="3" fill="#FF3D81"/></g><g class="wheel"><circle class="o" cx="210" cy="122" r="20" fill="#1B1B3A"/><circle cx="210" cy="122" r="11.6" fill="#E9EDF5"/><path d="M200 122H220M210 112V132" stroke="#1B1B3A" stroke-width="3"/><circle cx="217.2" cy="122" r="3" fill="#FF3D81"/></g><circle class="puff" cx="92" cy="136" r="9" style="animation-delay:0s"/><circle class="puff" cx="92" cy="136" r="9" style="animation-delay:-0.4s"/><circle class="puff" cx="92" cy="136" r="9" style="animation-delay:-0.8s"/><circle class="puff" cx="192" cy="136" r="9" style="animation-delay:0s"/><circle class="puff" cx="192" cy="136" r="9" style="animation-delay:-0.4s"/><circle class="puff" cx="192" cy="136" r="9" style="animation-delay:-0.8s"/></g><g class="veh"><g class="bob"><path class="o" fill="#FFD23F" d="M70 122 L70 104 Q70 94 82 92 L114 88 L136 62 Q140 58 148 58 L206 58 Q214 58 220 64 L240 88 L272 94 Q290 98 290 110 L290 122 Z"/><path class="o" fill="#BDEBFF" d="M142 86 L158 66 L182 66 L182 86 Z"/><path class="o" fill="#BDEBFF" d="M190 66 L208 66 L226 86 L190 86 Z"/><rect class="o" x="164" y="44" width="32" height="14" rx="4" fill="#FF3D81"/><circle class="o" cx="282" cy="104" r="6" fill="#fff"/><rect class="o" x="68" y="100" width="8" height="10" rx="3" fill="#FF3D81"/></g><g class="wheel"><circle class="o" cx="112" cy="122" r="20" fill="#1B1B3A"/><circle cx="112" cy="122" r="11.6" fill="#E9EDF5"/><path d="M102 122H122M112 112V132" stroke="#1B1B3A" stroke-width="3"/><circle cx="119.2" cy="122" r="3" fill="#FF3D81"/></g><g class="wheel"><circle class="o" cx="252" cy="122" r="20" fill="#1B1B3A"/><circle cx="252" cy="122" r="11.6" fill="#E9EDF5"/><path d="M242 122H262M252 112V132" stroke="#1B1B3A" stroke-width="3"/><circle cx="259.2" cy="122" r="3" fill="#FF3D81"/></g><circle class="puff" cx="94" cy="136" r="9" style="animation-delay:0s"/><circle class="puff" cx="94" cy="136" r="9" style="animation-delay:-0.4s"/><circle class="puff" cx="94" cy="136" r="9" style="animation-delay:-0.8s"/><circle class="puff" cx="234" cy="136" r="9" style="animation-delay:0s"/><circle class="puff" cx="234" cy="136" r="9" style="animation-delay:-0.4s"/><circle class="puff" cx="234" cy="136" r="9" style="animation-delay:-0.8s"/></g><g class="veh"><g class="bob"><rect class="o" x="92" y="56" width="124" height="28" fill="#2C2C5A"/><circle class="o" cx="132" cy="70" r="9" fill="#FF3D81"/><path class="o" fill="#19C3B1" d="M84 56 Q84 38 102 38 L204 38 Q216 38 222 48 L232 62 L84 62Z"/><path class="o" fill="#FFD23F" d="M90 84 L236 84 L246 104 L248 125 L90 125Z"/><path class="o" fill="#BDEBFF" d="M206 62 L226 62 L236 84 L212 84Z"/><circle class="o" cx="242" cy="98" r="6" fill="#fff"/></g><g class="wheel"><circle class="o" cx="120" cy="125" r="17" fill="#1B1B3A"/><circle cx="120" cy="125" r="9.86" fill="#E9EDF5"/><path d="M111.5 125H128.5M120 116.5V133.5" stroke="#1B1B3A" stroke-width="3"/><circle cx="126.12" cy="125" r="3" fill="#FF3D81"/></g><g class="wheel"><circle class="o" cx="256" cy="125" r="17" fill="#1B1B3A"/><circle cx="256" cy="125" r="9.86" fill="#E9EDF5"/><path d="M247.5 125H264.5M256 116.5V133.5" stroke="#1B1B3A" stroke-width="3"/><circle cx="262.12" cy="125" r="3" fill="#FF3D81"/></g><circle class="puff" cx="105" cy="136" r="7.65" style="animation-delay:0s"/><circle class="puff" cx="105" cy="136" r="7.65" style="animation-delay:-0.4s"/><circle class="puff" cx="105" cy="136" r="7.65" style="animation-delay:-0.8s"/><circle class="puff" cx="241" cy="136" r="7.65" style="animation-delay:0s"/><circle class="puff" cx="241" cy="136" r="7.65" style="animation-delay:-0.4s"/><circle class="puff" cx="241" cy="136" r="7.65" style="animation-delay:-0.8s"/></g>
+</svg>
+<script>
+(function(){
+var root=document.getElementById('zoomo-logo'),vs=root.querySelectorAll('.veh'),i=0,lock=false;
+vs[0].classList.add('on');
+function next(){
+  if(lock)return;lock=true;
+  var a=vs[i];i=(i+1)%vs.length;var b=vs[i];
+  b.classList.add('on');a.classList.remove('on');a.classList.add('out');
+  setTimeout(function(){a.style.transition='none';a.classList.remove('out');void a.getBoundingClientRect();a.style.transition='';lock=false},900);
+}
+root.addEventListener('mouseenter',next);root.addEventListener('click',next);
+root.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();next()}});
+})();
+</script>
+</div>

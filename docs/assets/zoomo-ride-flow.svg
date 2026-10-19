@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 300" role="img" aria-labelledby="title description">
+  <title id="title">Zoomo ride request flow</title>
+  <desc id="description">An animated sequence from sign in through route estimate, fare choice, driver match, and ride completion.</desc>
+  <defs>
+    <linearGradient id="route" x1="0" x2="1">
+      <stop offset="0" stop-color="#a9c878"/>
+      <stop offset="1" stop-color="#326e52"/>
+    </linearGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="8"/>
+    </filter>
+  </defs>
+  <rect width="1080" height="300" rx="24" fill="#f5f7f0"/>
+  <path d="M115 112 H965" stroke="#dce5d4" stroke-width="8" stroke-linecap="round"/>
+  <path class="route-line" d="M115 112 H965" stroke="url(#route)" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <g fill="#fff" stroke="#356b4d" stroke-width="4">
+    <circle class="node n1" cx="115" cy="112" r="17"/>
+    <circle class="node n2" cx="327" cy="112" r="17"/>
+    <circle class="node n3" cx="540" cy="112" r="17"/>
+    <circle class="node n4" cx="753" cy="112" r="17"/>
+    <circle class="node n5" cx="965" cy="112" r="17"/>
+  </g>
+  <g fill="#254437" font-family="Arial,Helvetica,sans-serif" text-anchor="middle">
+    <text x="115" y="165" font-size="16" font-weight="700">Sign in</text>
+    <text x="327" y="165" font-size="16" font-weight="700">Set route</text>
+    <text x="540" y="165" font-size="16" font-weight="700">See upfront fare</text>
+    <text x="753" y="165" font-size="16" font-weight="700">Match driver</text>
+    <text x="965" y="165" font-size="16" font-weight="700">Complete ride</text>
+    <text x="540" y="235" font-size="13" fill="#718176">Rider and driver actions stay in sync through the booking lifecycle</text>
+  </g>
+  <g class="car" transform="translate(0 0)">
+    <ellipse cx="115" cy="111" rx="30" ry="24" fill="#a9c878" opacity=".35" filter="url(#soft)"/>
+    <path d="M94 99h32l8 12v11H88v-11z" fill="#d8ed9a" stroke="#326e52" stroke-width="2" stroke-linejoin="round"/>
+    <path d="m100 101-5 8h28l-5-8z" fill="#fff" opacity=".9"/>
+    <circle cx="98" cy="123" r="4" fill="#254437"/><circle cx="127" cy="123" r="4" fill="#254437"/>
+  </g>
+  <style>
+    .route-line{stroke-dasharray:18 14;animation:route 5s linear infinite}
+    .node{transform-box:fill-box;transform-origin:center;animation:pulse 2.5s ease-in-out infinite}
+    .n2{animation-delay:.5s}.n3{animation-delay:1s}.n4{animation-delay:1.5s}.n5{animation-delay:2s}
+    .car{animation:drive 5s ease-in-out infinite alternate}
+    @keyframes route{to{stroke-dashoffset:-160}}
+    @keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.18)}}
+    @keyframes drive{0%{transform:translateX(0)}100%{transform:translateX(850px)}}
+    @media(prefers-reduced-motion:reduce){.route-line,.node,.car{animation:none}}
+  </style>
+</svg>

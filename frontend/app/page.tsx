@@ -2,6 +2,9 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import { useRouter } from "next/navigation";
+import { Brand } from "./components/brand";
+import { clearSession, readSessionToken, readSessionUser, saveSession } from "./lib/session";
 
 const MapPicker = dynamic(() => import("./components/map-picker"), { ssr: false });
 const RideMap = dynamic(() => import("./components/ride-map"), { ssr: false });
@@ -25,9 +28,9 @@ async function api<T>(path: string, token?: string, options: RequestInit = {}): 
 const fmt = (paise: number) => `₹${Math.round(paise / 100)}`;
 
 export default function Home() {
+  const router = useRouter();
   const [token, setToken] = useState("");
   const [user, setUser] = useState<User | null>(null);
-  const [sessionReady, setSessionReady] = useState(false);
   const [register, setRegister] = useState(false);
   const [authError, setAuthError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
@@ -65,33 +68,32 @@ export default function Home() {
   const [view, setView] = useState<"ride" | "history" | "driver">("ride");
 
   useEffect(() => {
-    const saved = localStorage.getItem("cabby_token");
-    if (!saved) { setSessionReady(true); return; }
-    setToken(saved);
-    const cachedUser = localStorage.getItem("cabby_user");
-    if (cachedUser) {
-      try { setUser(JSON.parse(cachedUser) as User); } catch { localStorage.removeItem("cabby_user"); }
-    }
+    const saved = readSessionToken();
+    if (!saved) return;
+    queueMicrotask(() => setToken(saved));
+    const cachedUser = readSessionUser();
+    if (cachedUser) queueMicrotask(() => setUser(cachedUser));
     api<User>("/api/auth/me", saved).then((current) => {
       setUser(current);
-      localStorage.setItem("cabby_user", JSON.stringify(current));
+      saveSession(saved, current);
     }).catch((reason) => {
       if (reason instanceof ApiError && reason.status === 401) {
-        localStorage.removeItem("cabby_token");
-        localStorage.removeItem("cabby_user");
+        clearSession();
         setToken("");
         setUser(null);
       }
       // Keep the cached session through temporary network/API outages.
-    }).finally(() => setSessionReady(true));
+    });
   }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const payment = params.get("payment");
-    if (params.get("view") === "history") setView("history");
-    if (payment === "success") setPaymentNotice("Payment submitted. Ride history will update after Stripe confirms it.");
-    if (payment === "cancelled") setPaymentNotice("Payment cancelled. You can retry from ride history.");
+    queueMicrotask(() => {
+      if (params.get("view") === "history") setView("history");
+      if (payment === "success") setPaymentNotice("Payment submitted. Ride history will update after Stripe confirms it.");
+      if (payment === "cancelled") setPaymentNotice("Payment cancelled. You can retry from ride history.");
+    });
     if (payment || params.has("view")) {
       params.delete("payment"); params.delete("session_id"); params.delete("ride_id"); params.delete("view");
       const query = params.toString();
@@ -111,10 +113,10 @@ export default function Home() {
   useEffect(() => {
     let stale = false;
     if (!token || !["pickup", "destination"].includes(step) || query.trim().length < 3) {
-      setResults([]); setSuggestionsLoading(false);
+      queueMicrotask(() => { if (!stale) { setResults([]); setSuggestionsLoading(false); } });
       return;
     }
-    setSuggestionsLoading(true);
+    queueMicrotask(() => { if (!stale) setSuggestionsLoading(true); });
     const timer = window.setTimeout(() => {
       void api<Place[]>(`/api/locations/suggest?q=${encodeURIComponent(query.trim())}`, token)
         .then((places) => { if (!stale) setResults(places); })
@@ -154,8 +156,7 @@ export default function Home() {
     event.preventDefault(); setAuthBusy(true); setAuthError("");
     try {
       const result = await api<{ token: string; user: User }>(`/api/auth/${register ? "register" : "login"}`, undefined, { method: "POST", body: JSON.stringify({ name, email, password, role, vehicle, plate, ride_type: driverMode }) });
-      localStorage.setItem("cabby_token", result.token);
-      localStorage.setItem("cabby_user", JSON.stringify(result.user));
+      saveSession(result.token, result.user);
       setToken(result.token); setUser(result.user);
     } catch (reason) { setAuthError(reason instanceof Error ? reason.message : "Authentication failed"); }
     finally { setAuthBusy(false); }
@@ -172,23 +173,27 @@ export default function Home() {
   }
 
   const refreshRide = useCallback(async () => {
-    if (ride && token) { try { setRide(await api<Ride>(`/api/rides/${ride.id}`, token)); } catch { /* transient polling error */ } }
+    const rideId = ride?.id;
+    if (rideId && token) { try { setRide(await api<Ride>(`/api/rides/${rideId}`, token)); } catch { /* transient polling error */ } }
   }, [ride?.id, token]);
 
   useEffect(() => {
-    if (!ride || !token) return;
+    if (!ride?.id || !token) return;
     const timer = window.setInterval(() => { void refreshRide(); }, 4000);
     return () => window.clearInterval(timer);
   }, [ride?.id, token, refreshRide]);
 
   useEffect(() => {
-    const driver = ride?.driver;
-    if (!ride || !pickup || !driver || driver.latitude == null || driver.longitude == null || !["accepted", "arriving"].includes(ride.status)) return;
+    const rideId = ride?.id;
+    const rideStatus = ride?.status;
+    const driverLatitude = ride?.driver?.latitude;
+    const driverLongitude = ride?.driver?.longitude;
+    if (!rideId || !pickup || driverLatitude == null || driverLongitude == null || !["accepted", "arriving"].includes(rideStatus ?? "")) return;
     if (Date.now() - lastApproachFetch.current < 12000) return;
     lastApproachFetch.current = Date.now();
-    const params = new URLSearchParams({ origin_latitude: String(driver.latitude), origin_longitude: String(driver.longitude), destination_latitude: String(pickup.latitude), destination_longitude: String(pickup.longitude) });
+    const params = new URLSearchParams({ origin_latitude: String(driverLatitude), origin_longitude: String(driverLongitude), destination_latitude: String(pickup.latitude), destination_longitude: String(pickup.longitude) });
     void api<Route>(`/api/route?${params}`, token).then((result) => setApproachPath(result.path)).catch(() => {});
-  }, [ride?.status, ride?.driver?.latitude, ride?.driver?.longitude, pickup, token]);
+  }, [ride?.id, ride?.status, ride?.driver?.latitude, ride?.driver?.longitude, pickup, token]);
 
   useEffect(() => {
     if (!token || !user) return;
@@ -223,8 +228,8 @@ export default function Home() {
     finally { setBusy(false); }
   }
 
-  async function payRide(rideId: number) {
-    window.location.assign(`/payment?ride_id=${rideId}`);
+  function payRide(rideId: number) {
+    router.push(`/payment?ride_id=${rideId}`);
   }
 
   async function cancelRide() {
@@ -246,20 +251,18 @@ export default function Home() {
 
   function logout() {
     if (token) void api("/api/auth/logout", token, { method: "POST" }).catch(() => {});
-    localStorage.removeItem("cabby_token");
-    localStorage.removeItem("cabby_user");
+    clearSession();
     setToken(""); setUser(null); setRide(null); setPickup(null); setDestination(null); setStep("pickup"); setView("ride");
   }
 
-  if (!sessionReady) return <main className="auth-gate"><div className="auth-card" role="status">Checking your account…</div></main>;
-  if (!user) return <main className="auth-gate"><div className="auth-card"><a className="brand" href="#">✳ cabby</a><span className="section-kicker">YOUR CITY, YOUR RIDE</span><h1>{register ? "Create your account" : "Welcome back"}</h1><p>Sign in to book rides. No guest access.</p><form onSubmit={submitAuth}>
+  if (!user) return <main className="auth-gate"><div className="auth-card"><Brand /><span className="section-kicker">YOUR CITY, YOUR RIDE</span><h1>{register ? "Create your account" : "Welcome back"}</h1><p>Sign in to book rides. No guest access.</p><form onSubmit={submitAuth}>
     {register && <><label>Name<input required minLength={2} value={name} onChange={(e) => setName(e.target.value)} /></label><label>Account type<select value={role} onChange={(e) => setRole(e.target.value as "rider" | "driver")}><option value="rider">Rider</option><option value="driver">Driver</option></select></label>{role === "driver" && <><label>Vehicle<input required value={vehicle} onChange={(e) => setVehicle(e.target.value)} placeholder="Vehicle model" /></label><label>Plate number<input required value={plate} onChange={(e) => setPlate(e.target.value)} /></label><label>Ride category<select value={driverMode} onChange={(e) => setDriverMode(e.target.value)}>{["auto", "bike", "cab", "maxi_cab"].map((mode) => <option key={mode} value={mode}>{mode.replace("_", " ")}</option>)}</select></label></>}</>}
     <label>Email<input required type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></label><label>Password<input required type="password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} /></label>{authError && <p className="form-error">{authError}</p>}<button className="book-button" disabled={authBusy}>{authBusy ? "Please wait…" : register ? "Create account" : "Sign in"}</button></form><button className="text-button" onClick={() => { setRegister(!register); setAuthError(""); }}>{register ? "Have account? Sign in" : "New here? Create account"}</button></div></main>;
 
   const modes = route?.modes ?? [];
   const statuses: Record<string, string> = { requested: "Finding a nearby driver", accepted: "Driver accepted your ride", arriving: "Driver is on the way", arrived: "Driver arrived · share OTP", in_progress: "Ride in progress", completed: "Ride completed", cancelled: "Ride cancelled" };
   return <main className="app-shell">
-    <header className="topbar"><a className="brand" href="#">✳ cabby</a><nav><button className={view === "ride" ? "active" : ""} onClick={() => setView("ride")}>Book ride</button>{user.role === "rider" ? <button onClick={() => setView("history")}>History</button> : <button onClick={() => setView("driver")}>Driver</button>}</nav><div className="profile-button">{user.name}<button onClick={logout}>Sign out</button></div></header>
+    <header className="topbar"><Brand /><nav><button className={view === "ride" ? "active" : ""} onClick={() => setView("ride")}>Book ride</button>{user.role === "rider" ? <button onClick={() => setView("history")}>History</button> : <button onClick={() => setView("driver")}>Driver</button>}</nav><div className="profile-button">{user.name}<button onClick={logout}>Sign out</button></div></header>
     {error && <p className="form-error" role="alert">{error}</p>}
     {paymentNotice && <p className="payment-notice" role="status">{paymentNotice}</p>}
     {view === "ride" && user.role === "rider" && <>
@@ -271,7 +274,7 @@ export default function Home() {
     </>}
     {view === "history" && <section className="flow-card"><span className="section-kicker">YOUR JOURNEYS</span><h2>Ride history</h2>{history.map((item) => <article className="history-row" key={item.id}><div><strong>{item.pickup} → {item.destination}</strong><small>#{item.id} · {item.ride_type} · {item.status} · {item.payment_status}</small></div><b>{fmt(item.fare_paise)}</b>{item.status === "completed" && !["paid", "demo_paid"].includes(item.payment_status) && <button onClick={() => void payRide(item.id)}>Pay fare</button>}{item.status === "completed" && !item.reviewed && !reviewed.includes(item.id) && (reviewing === item.id ? <span className="review-inline"><select value={reviewRating} onChange={(e) => setReviewRating(Number(e.target.value))}>{[5, 4, 3, 2, 1].map((rating) => <option key={rating} value={rating}>{rating} stars</option>)}</select><input placeholder="Review" value={reviewComment} onChange={(e) => setReviewComment(e.target.value)} /><button onClick={() => void submitReview(item.id)}>Send</button></span> : <button onClick={() => setReviewing(item.id)}>Rate</button>)}</article>)}{!history.length && <p>No rides yet.</p>}</section>}
     {view === "driver" && user.role === "driver" && <section className="flow-card"><span className="section-kicker">DRIVER SPACE</span><div className="driver-heading"><h2>Ride requests</h2><button className="next-button" onClick={async () => { const result = await api<{ available: boolean }>(`/api/drivers/availability?available=${!availability}`, token, { method: "PATCH" }); setAvailability(result.available); }}>{availability ? "● Available" : "○ Offline"}</button></div><p className="driver-rating">{driverRating.rating_count ? <>Your rating: <strong>★ {driverRating.rating?.toFixed(1)}</strong> from {driverRating.rating_count} ride{driverRating.rating_count === 1 ? "" : "s"}</> : "No ratings yet. Your rider reviews will appear here."}</p><p>Keep location enabled to share live position while online.</p>{driverRides.map((item) => <article className="driver-ride" key={item.id}><strong>{item.pickup} → {item.destination}</strong><small>#{item.id} · {item.ride_type} · {item.status} · {fmt(item.fare_paise)}</small>{item.status === "requested" && <button onClick={() => void driverAction(`/api/rides/${item.id}/status`, { status: "accepted" })}>Accept ride</button>}{item.status === "accepted" && <button onClick={() => void driverAction(`/api/rides/${item.id}/status`, { status: "arriving" })}>On the way</button>}{item.status === "arriving" && <button onClick={() => void driverAction(`/api/rides/${item.id}/status`, { status: "arrived" })}>I’ve arrived</button>}{item.status === "arrived" && <form className="search-form" onSubmit={(e) => { e.preventDefault(); void verifyOtp(item.id); }}><input required pattern="[0-9]{4}" maxLength={4} value={otpInput} onChange={(e) => setOtpInput(e.target.value)} placeholder="Rider OTP" /><button disabled={busy}>Verify & start</button></form>}{item.status === "in_progress" && <button onClick={() => void driverAction(`/api/rides/${item.id}/status`, { status: "completed" })}>Complete ride</button>}</article>)}{!driverRides.length && <p>No matching rides yet.</p>}</section>}
-    <footer className="footer">Cabby · Routes via OSRM · OpenStreetMap</footer>
+    <footer className="footer">Zoomo · Routes via OSRM · OpenStreetMap</footer>
     {mapPickerOpen && <MapPicker initialPoint={step === "pickup" ? pickup : destination} onCancel={() => setMapPickerOpen(false)} onConfirm={(point) => void confirmMapPoint(point)} />}
   </main>;
 }

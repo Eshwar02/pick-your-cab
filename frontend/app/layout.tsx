@@ -3,7 +3,7 @@ import "leaflet/dist/leaflet.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Cabby — Your city, your ride",
+  title: "Zoomo — Your city, your ride",
   description: "Book reliable rides around your city with clear upfront pricing.",
 };
 

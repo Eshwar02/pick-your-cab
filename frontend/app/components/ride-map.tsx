@@ -21,20 +21,22 @@ export default function RideMap({ pickup, destination, path, driver, mode }: Rid
   const destinationMarker = useRef<import("leaflet").Marker | null>(null);
   const driverMarker = useRef<import("leaflet").Marker | null>(null);
   const routeLine = useRef<import("leaflet").Polyline | null>(null);
+  const initialPickup = useRef(pickup);
+  const initialDestination = useRef(destination);
 
   useEffect(() => {
     let disposed = false;
     let activeMap: import("leaflet").Map | undefined;
     void import("leaflet").then((L) => {
       if (!host.current || disposed) return;
-      activeMap = L.map(host.current, { zoomControl: true, scrollWheelZoom: true }).setView([pickup.latitude, pickup.longitude], 13);
+      activeMap = L.map(host.current, { zoomControl: true, scrollWheelZoom: true }).setView([initialPickup.current.latitude, initialPickup.current.longitude], 13);
       L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
         maxZoom: 19,
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
       }).addTo(activeMap);
       map.current = activeMap;
-      pickupMarker.current = L.marker([pickup.latitude, pickup.longitude], { icon: L.divIcon({ className: "cabby-leaflet-icon pickup-leaflet-icon", html: "<span>●</span>", iconSize: [28, 28], iconAnchor: [14, 23] }) }).addTo(activeMap);
-      destinationMarker.current = L.marker([destination.latitude, destination.longitude], { icon: L.divIcon({ className: "cabby-leaflet-icon destination-leaflet-icon", html: "<span>◆</span>", iconSize: [28, 28], iconAnchor: [14, 23] }) }).addTo(activeMap);
+      pickupMarker.current = L.marker([initialPickup.current.latitude, initialPickup.current.longitude], { icon: L.divIcon({ className: "zoomo-leaflet-icon pickup-leaflet-icon", html: "<span>●</span>", iconSize: [28, 28], iconAnchor: [14, 23] }) }).addTo(activeMap);
+      destinationMarker.current = L.marker([initialDestination.current.latitude, initialDestination.current.longitude], { icon: L.divIcon({ className: "zoomo-leaflet-icon destination-leaflet-icon", html: "<span>◆</span>", iconSize: [28, 28], iconAnchor: [14, 23] }) }).addTo(activeMap);
       window.setTimeout(() => activeMap?.invalidateSize(), 50);
     });
     return () => {
@@ -59,7 +61,7 @@ export default function RideMap({ pickup, destination, path, driver, mode }: Rid
       if (driver?.latitude != null && driver.longitude != null) {
         if (!driverMarker.current) {
           const vehicle = vehicleIcons[mode] ?? vehicleIcons.cab;
-          driverMarker.current = L.marker([driver.latitude, driver.longitude], { icon: L.divIcon({ className: "cabby-leaflet-icon driver-leaflet-icon", html: `<span aria-label="${mode} vehicle">${vehicle}</span>`, iconSize: [46, 46], iconAnchor: [23, 23] }) }).addTo(map.current!);
+          driverMarker.current = L.marker([driver.latitude, driver.longitude], { icon: L.divIcon({ className: "zoomo-leaflet-icon driver-leaflet-icon", html: `<span aria-label="${mode} vehicle">${vehicle}</span>`, iconSize: [46, 46], iconAnchor: [23, 23] }) }).addTo(map.current!);
         } else {
           driverMarker.current.setLatLng([driver.latitude, driver.longitude]);
         }
@@ -69,7 +71,7 @@ export default function RideMap({ pickup, destination, path, driver, mode }: Rid
       map.current!.fitBounds(L.latLngBounds(points), { padding: [40, 40], maxZoom: 15 });
     });
     return () => { disposed = true; };
-  }, [pickup, destination, path, driver?.latitude, driver?.longitude]);
+  }, [pickup, destination, pickup.latitude, pickup.longitude, destination.latitude, destination.longitude, path, driver?.latitude, driver?.longitude, mode]);
 
   return <div className="ride-map" ref={host} aria-label="OpenStreetMap route map" />;
 }
