@@ -17,34 +17,26 @@ const vehicleIcons: Record<string, string> = { auto: "🛺", bike: "🏍️", ca
 const mockVehicles = Array.from({ length: 20 }, (_, index) => ({
   id: index + 1,
   mode: (["auto", "bike", "cab", "maxi_cab"] as const)[index % 4],
-  phase: index / 20,
-  cycleSeconds: 150 + (index % 8) * 13,
+  // Stable per-vehicle values keep the demo fleet spread out after every render.
+  angle: index * 2.399963 + ((index * 37) % 19) / 19,
+  radius: 120 + ((index * 173) % 590),
+  phase: ((index * 47) % 360) * Math.PI / 180,
+  cycleSeconds: 38 + (index * 17) % 43,
+  orbit: 28 + (index * 23) % 48,
   eta: 1 + (index % 7),
 }));
 
-function pathSampler(path: [number, number][]) {
-  const distances = [0];
-  for (let index = 1; index < path.length; index += 1) {
-    const [lat1, lon1] = path[index - 1];
-    const [lat2, lon2] = path[index];
-    const latitudeKm = (lat2 - lat1) * 111.32;
-    const longitudeKm = (lon2 - lon1) * 111.32 * Math.cos(((lat1 + lat2) / 2) * Math.PI / 180);
-    distances.push(distances[index - 1] + Math.hypot(latitudeKm, longitudeKm));
-  }
-  const totalKm = distances.at(-1) ?? 0;
-  const visibleDistance = Math.min(totalKm, 1.4);
-  return (progress: number): [number, number] => {
-    if (path.length < 2 || totalKm === 0) return path[0] ?? [13.0827, 80.2707];
-    const target = Math.min(totalKm, progress * visibleDistance);
-    let segment = 1;
-    while (segment < distances.length - 1 && distances[segment] < target) segment += 1;
-    const segmentLength = distances[segment] - distances[segment - 1] || 1;
-    const fraction = Math.max(0, Math.min(1, (target - distances[segment - 1]) / segmentLength));
-    return [
-      path[segment - 1][0] + (path[segment][0] - path[segment - 1][0]) * fraction,
-      path[segment - 1][1] + (path[segment][1] - path[segment - 1][1]) * fraction,
-    ];
-  };
+function nearbyVehiclePosition(pickup: Place, vehicle: (typeof mockVehicles)[number], elapsedSeconds: number): [number, number] {
+  // Give each demo driver a distinct nearby starting point, then move it on its
+  // own short loop instead of marching every icon along the rider's route.
+  const latitudeScale = 111_320;
+  const longitudeScale = latitudeScale * Math.max(0.2, Math.cos(pickup.latitude * Math.PI / 180));
+  const cycle = elapsedSeconds / vehicle.cycleSeconds * Math.PI * 2 + vehicle.phase;
+  const driftEast = Math.sin(cycle) * vehicle.orbit + Math.sin(cycle * 0.43) * vehicle.orbit * 0.28;
+  const driftNorth = Math.cos(cycle * 0.79) * vehicle.orbit * 0.72;
+  const distanceEast = Math.cos(vehicle.angle) * vehicle.radius + driftEast;
+  const distanceNorth = Math.sin(vehicle.angle) * vehicle.radius + driftNorth;
+  return [pickup.latitude + distanceNorth / latitudeScale, pickup.longitude + distanceEast / longitudeScale];
 }
 
 export default function RideMap({ pickup, destination, path, driver, mode, searching = false }: RideMapProps) {
@@ -107,11 +99,10 @@ export default function RideMap({ pickup, destination, path, driver, mode, searc
         }
       }
       if (searching && driver?.latitude == null && path.length > 1) {
-        const sampleRoad = pathSampler(path);
         if (mockDriverMarkers.current.length !== mockVehicles.length) {
           mockDriverMarkers.current.forEach((marker) => marker.remove());
           mockDriverMarkers.current = mockVehicles.map((vehicle) => {
-            const latLng = sampleRoad(vehicle.phase * 0.96);
+            const latLng = nearbyVehiclePosition(pickup, vehicle, 0);
             const icon = vehicleIcons[vehicle.mode];
             return L.marker(latLng, { icon: L.divIcon({ className: "zoomo-leaflet-icon mock-vehicle-icon", html: `<span aria-label="Simulated ${vehicle.mode.replace("_", " ")}">${icon}</span>`, iconSize: [38, 38], iconAnchor: [19, 19] }) })
               .addTo(map.current!)
@@ -122,8 +113,7 @@ export default function RideMap({ pickup, destination, path, driver, mode, searc
         const moveVehicles = () => {
           const elapsed = (Date.now() - startedAt) / 1000;
           mockVehicles.forEach((vehicle, index) => {
-            const cycle = ((elapsed / vehicle.cycleSeconds + vehicle.phase) % 2 + 2) % 2;
-            const position = sampleRoad(cycle <= 1 ? cycle : 2 - cycle);
+            const position = nearbyVehiclePosition(pickup, vehicle, elapsed);
             mockDriverMarkers.current[index]?.setLatLng(position);
           });
         };
