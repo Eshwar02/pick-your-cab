@@ -14,10 +14,10 @@ from urllib.parse import urlencode
 import httpx
 import stripe
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, create_engine, func, select
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, create_engine, func, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -37,6 +37,7 @@ OSRM_URL = os.getenv("OSRM_URL", "https://router.project-osrm.org")
 MAPS_USER_AGENT = os.getenv("MAPS_USER_AGENT", "ZoomoRideApp/0.2 (contact: support@zoomo.example)")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+REDIS_URL = os.getenv("REDIS_URL")
 stripe.api_key = STRIPE_SECRET_KEY
 
 engine_options = {"connect_args": {"check_same_thread": False}} if DATABASE_URL.startswith("sqlite") else {}
@@ -91,6 +92,8 @@ class Ride(Base):
     distance_km: Mapped[float] = mapped_column(Float)
     duration_min: Mapped[int] = mapped_column(Integer)
     fare_paise: Mapped[int] = mapped_column(Integer)
+    discount_paise: Mapped[int] = mapped_column(Integer, default=0)
+    promo_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
     payment_status: Mapped[str] = mapped_column(String(30), default="unpaid")
     stripe_payment_intent_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     stripe_checkout_session_id: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
@@ -124,6 +127,41 @@ class RideMode(Base):
     active: Mapped[bool] = mapped_column(default=True)
 
 
+class PromoCode(Base):
+    __tablename__ = "promo_codes"
+    code: Mapped[str] = mapped_column(String(40), primary_key=True)
+    percent_off: Mapped[int] = mapped_column(Integer, default=10)
+    max_discount_paise: Mapped[int] = mapped_column(Integer, default=5000)
+    max_uses: Mapped[int] = mapped_column(Integer, default=1000)
+    uses: Mapped[int] = mapped_column(Integer, default=0)
+    active: Mapped[bool] = mapped_column(default=True)
+
+
+class Wallet(Base):
+    __tablename__ = "wallets"
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    balance_paise: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class WalletTransaction(Base):
+    __tablename__ = "wallet_transactions"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    ride_id: Mapped[int | None] = mapped_column(ForeignKey("rides.id"), nullable=True)
+    amount_paise: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(24))
+    reference: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class RideReceipt(Base):
+    __tablename__ = "ride_receipts"
+    ride_id: Mapped[int] = mapped_column(ForeignKey("rides.id"), primary_key=True)
+    pdf: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class UserIn(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     email: EmailStr
@@ -147,6 +185,11 @@ class RideIn(BaseModel):
     pickup_longitude: float = Field(ge=-180, le=180)
     destination_latitude: float = Field(ge=-90, le=90)
     destination_longitude: float = Field(ge=-180, le=180)
+    promo_code: str | None = Field(default=None, max_length=40)
+
+
+class WalletTopupIn(BaseModel):
+    amount_paise: int = Field(ge=10000, le=5000000)
 
 
 class CoordinatesIn(BaseModel):
@@ -249,7 +292,9 @@ def verify_password(password: str, stored: str) -> bool:
 def create_default_data(db: Session) -> None:
     if db.scalar(select(RideMode.id).limit(1)) is None:
         db.add_all([RideMode(**mode) for mode in RIDE_MODE_DEFAULTS])
-        db.commit()
+    if db.get(PromoCode, "WELCOME10") is None:
+        db.add(PromoCode(code="WELCOME10", percent_off=10, max_discount_paise=5000, max_uses=100000, uses=0, active=True))
+    db.commit()
 
 
 @app.on_event("startup")
@@ -491,6 +536,7 @@ def ride_response(ride: Ride, db: Session, viewer: User | None = None) -> dict:
         "ride_type": ride.ride_type, "status": ride.status,
         "distance_km": ride.distance_km, "duration_min": ride.duration_min,
         "fare_paise": ride.fare_paise, "payment_status": ride.payment_status,
+        "discount_paise": ride.discount_paise, "promo_code": ride.promo_code,
         "reviewed": review is not None,
         "created_at": ride.created_at.isoformat(),
         "pickup_latitude": ride.pickup_latitude,
@@ -502,6 +548,152 @@ def ride_response(ride: Ride, db: Session, viewer: User | None = None) -> dict:
     }
 
 
+def queue_receipt(ride_id: int) -> None:
+    from tasks import generate_ride_receipt, store_receipt
+    if REDIS_URL:
+        generate_ride_receipt.delay(ride_id)
+    else:
+        store_receipt(ride_id)
+
+
+def publish_ride_event(ride_id: int, event: str) -> None:
+    if not REDIS_URL:
+        return
+    try:
+        import redis
+        redis.Redis.from_url(REDIS_URL, socket_timeout=1).publish(f"ride:{ride_id}", event)
+    except Exception:
+        pass
+
+
+@app.websocket("/ws/rides/{ride_id}")
+async def ride_events(websocket: WebSocket, ride_id: int, ticket: str):
+    await websocket.accept()
+    try:
+        if not REDIS_URL:
+            await websocket.close(code=1013, reason="Redis live updates unavailable")
+            return
+        import redis.asyncio as redis_async
+        client = redis_async.from_url(REDIS_URL, decode_responses=True)
+        identity = await client.getdel(f"ws-ticket:{ticket}")
+        if not identity:
+            await client.aclose()
+            await websocket.close(code=4401)
+            return
+        ticket_ride_id, user_id = identity.split(":", 1)
+        if int(ticket_ride_id) != ride_id:
+            await client.aclose()
+            await websocket.close(code=4403)
+            return
+        with SessionLocal() as db:
+            user_id = int(user_id)
+            user = db.get(User, user_id)
+            ride = db.get(Ride, ride_id)
+            driver = db.scalar(select(Driver).where(Driver.user_id == user_id)) if user and user.role == "driver" else None
+            if user is None or ride is None or (ride.rider_id != user.id and (driver is None or ride.driver_id != driver.id)):
+                await client.aclose()
+                await websocket.close(code=4403)
+                return
+        pubsub = client.pubsub()
+        await pubsub.subscribe(f"ride:{ride_id}")
+        try:
+            while True:
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1)
+                if message and message.get("data"):
+                    await websocket.send_text(message["data"])
+                await asyncio.sleep(0.08)
+        finally:
+            await pubsub.unsubscribe(f"ride:{ride_id}")
+            await pubsub.aclose()
+            await client.aclose()
+    except (WebSocketDisconnect, ValueError, TypeError):
+        return
+
+
+@app.post("/api/rides/{ride_id}/ws-ticket")
+def create_ride_ws_ticket(ride_id: int, user: User = Depends(current_user)):
+    if not REDIS_URL:
+        raise HTTPException(503, "Redis live updates unavailable")
+    with SessionLocal() as db:
+        ride = db.get(Ride, ride_id)
+        driver = db.scalar(select(Driver).where(Driver.user_id == user.id)) if user.role == "driver" else None
+        if ride is None or (ride.rider_id != user.id and (driver is None or ride.driver_id != driver.id)):
+            raise HTTPException(404, "Ride not found")
+    import redis
+    ticket = secrets.token_urlsafe(24)
+    redis.Redis.from_url(REDIS_URL, socket_timeout=1).setex(f"ws-ticket:{ticket}", 60, f"{ride_id}:{user.id}")
+    return {"ticket": ticket}
+
+
+@app.get("/api/wallet")
+def get_wallet(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    wallet = db.get(Wallet, user.id)
+    if wallet is None:
+        wallet = Wallet(user_id=user.id, balance_paise=0)
+        db.add(wallet)
+        db.commit()
+    recent = db.scalars(select(WalletTransaction).where(WalletTransaction.user_id == user.id).order_by(WalletTransaction.created_at.desc()).limit(25)).all()
+    return {"balance_paise": wallet.balance_paise, "transactions": [{"id": item.id, "ride_id": item.ride_id, "amount_paise": item.amount_paise, "kind": item.kind, "created_at": item.created_at.isoformat()} for item in recent]}
+
+
+@app.post("/api/wallet/topups")
+def create_wallet_topup(data: WalletTopupIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(503, "Wallet top-ups require Stripe configuration")
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
+    checkout = stripe.checkout.Session.create(
+        mode="payment", line_items=[{"price_data": {"currency": "inr", "product_data": {"name": "Zoomo wallet top-up"}, "unit_amount": data.amount_paise}, "quantity": 1}],
+        success_url=f"{frontend_url}/?wallet=success&session_id={{CHECKOUT_SESSION_ID}}", cancel_url=f"{frontend_url}/?wallet=cancelled",
+        metadata={"purpose": "wallet_topup", "user_id": str(user.id), "amount_paise": str(data.amount_paise)}, customer_email=user.email,
+    )
+    return {"url": checkout.url}
+
+
+@app.post("/api/wallet/pay/{ride_id}")
+def pay_with_wallet(ride_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    ride = db.scalar(select(Ride).where(Ride.id == ride_id).with_for_update())
+    if not ride or ride.rider_id != user.id:
+        raise HTTPException(404, "Ride not found")
+    if ride.status != "completed":
+        raise HTTPException(409, "Wallet payment is available after ride completion")
+    if ride.payment_status == "paid":
+        return {"payment_status": "paid", "balance_paise": (db.get(Wallet, user.id) or Wallet(user_id=user.id)).balance_paise}
+    wallet = db.scalar(select(Wallet).where(Wallet.user_id == user.id).with_for_update())
+    if wallet is None or wallet.balance_paise < ride.fare_paise:
+        raise HTTPException(409, "Wallet balance is too low")
+    wallet.balance_paise -= ride.fare_paise
+    wallet.updated_at = datetime.now(timezone.utc)
+    ride.payment_status = "paid"
+    db.add(WalletTransaction(user_id=user.id, ride_id=ride.id, amount_paise=-ride.fare_paise, kind="ride_payment"))
+    db.commit()
+    queue_receipt(ride.id)
+    return {"payment_status": "paid", "balance_paise": wallet.balance_paise}
+
+
+@app.get("/api/rides/{ride_id}/receipt")
+def get_ride_receipt(ride_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    ride = db.get(Ride, ride_id)
+    driver = db.scalar(select(Driver).where(Driver.user_id == user.id)) if user.role == "driver" else None
+    if not ride or (ride.rider_id != user.id and (driver is None or ride.driver_id != driver.id)):
+        raise HTTPException(404, "Ride not found")
+    if ride.payment_status != "paid":
+        raise HTTPException(409, "Receipt is available after payment")
+    receipt = db.get(RideReceipt, ride_id)
+    if receipt is None:
+        queue_receipt(ride_id)
+        raise HTTPException(202, "Receipt is being generated. Retry shortly.")
+    from fastapi.responses import Response
+    return Response(receipt.pdf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="zoomo-ride-{ride_id}-receipt.pdf"'})
+
+
+@app.get("/api/promos/{code}")
+def validate_promo(code: str, db: Session = Depends(get_db), _: User = Depends(current_user)):
+    promo = db.get(PromoCode, code.strip().upper())
+    if promo is None or not promo.active or promo.uses >= promo.max_uses:
+        raise HTTPException(404, "Promo code is invalid or expired")
+    return {"code": promo.code, "percent_off": promo.percent_off, "max_discount_paise": promo.max_discount_paise}
+
+
 @app.post("/api/rides")
 async def request_ride(data: RideIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
     if user.role != "rider":
@@ -510,15 +702,25 @@ async def request_ride(data: RideIn, db: Session = Depends(get_db), user: User =
     mode = db.get(RideMode, data.ride_type)
     if mode is None or not mode.active:
         raise HTTPException(422, "This ride mode is unavailable")
+    gross_fare = calculate_fare(mode, route["distance_km"], route["duration_min"])
+    promo = None
+    discount = 0
+    if data.promo_code and data.promo_code.strip():
+        promo = db.get(PromoCode, data.promo_code.strip().upper())
+        if promo is None or not promo.active or promo.uses >= promo.max_uses:
+            raise HTTPException(422, "Promo code is invalid or expired")
+        discount = min(gross_fare * promo.percent_off // 100, promo.max_discount_paise)
     ride = Ride(
         rider_id=user.id, pickup=data.pickup.strip(), destination=data.destination.strip(),
         ride_type=data.ride_type, distance_km=route["distance_km"], duration_min=route["duration_min"],
-        fare_paise=calculate_fare(mode, route["distance_km"], route["duration_min"]), status="requested",
+        fare_paise=gross_fare - discount, discount_paise=discount, promo_code=promo.code if promo else None, status="requested",
         pickup_latitude=data.pickup_latitude, pickup_longitude=data.pickup_longitude,
         destination_latitude=data.destination_latitude, destination_longitude=data.destination_longitude,
         otp=f"{secrets.randbelow(10000):04d}",
     )
     db.add(ride)
+    if promo:
+        promo.uses += 1
     db.commit()
     db.refresh(ride)
     return ride_response(ride, db, user)
@@ -555,6 +757,7 @@ def update_ride_status(ride_id: int, data: DriverStatusIn, db: Session = Depends
         ride.driver_id = driver.id
         ride.status = "accepted"
         db.commit()
+        publish_ride_event(ride.id, "ride.updated")
         return ride_response(ride, db)
     elif ride.driver_id != driver.id:
         raise HTTPException(404, "Ride not found")
@@ -563,6 +766,7 @@ def update_ride_status(ride_id: int, data: DriverStatusIn, db: Session = Depends
         raise HTTPException(409, f"Cannot move ride from {ride.status} to {data.status}")
     ride.status = data.status
     db.commit()
+    publish_ride_event(ride.id, "ride.updated")
     return ride_response(ride, db)
 
 
@@ -578,6 +782,7 @@ def verify_ride_otp(ride_id: int, data: OtpIn, db: Session = Depends(get_db), us
         raise HTTPException(422, "OTP is incorrect")
     ride.status = "in_progress"
     db.commit()
+    publish_ride_event(ride.id, "ride.updated")
     return ride_response(ride, db)
 
 
@@ -590,6 +795,7 @@ def cancel_ride(ride_id: int, db: Session = Depends(get_db), user: User = Depend
         raise HTTPException(409, "Ride can no longer be cancelled")
     ride.status = "cancelled"
     db.commit()
+    publish_ride_event(ride.id, "ride.updated")
     return ride_response(ride, db, user)
 
 
@@ -640,8 +846,27 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
         paid_object = event.data.object
         with SessionLocal() as db:
             is_checkout_event = event.type.startswith("checkout.session.")
+            metadata = getattr(paid_object, "metadata", {}) or {}
+            if hasattr(metadata, "to_dict"):
+                metadata = metadata.to_dict()
+            if is_checkout_event and metadata.get("purpose") == "wallet_topup":
+                user_id = int(metadata.get("user_id", "0"))
+                amount = getattr(paid_object, "amount_total", None)
+                currency = getattr(paid_object, "currency", None)
+                session_id = getattr(paid_object, "id", None)
+                if getattr(paid_object, "payment_status", None) == "paid" and currency == "inr" and amount == int(metadata.get("amount_paise", "-1")) and user_id > 0:
+                    wallet = db.scalar(select(Wallet).where(Wallet.user_id == user_id).with_for_update())
+                    if wallet is None:
+                        wallet = Wallet(user_id=user_id, balance_paise=0)
+                        db.add(wallet)
+                    if not db.scalar(select(WalletTransaction.id).where(WalletTransaction.reference == session_id)):
+                        wallet.balance_paise += amount
+                        wallet.updated_at = datetime.now(timezone.utc)
+                        db.add(WalletTransaction(user_id=user_id, amount_paise=amount, kind="topup", reference=session_id))
+                        db.commit()
+                return {"received": True}
             payment_intent_id = getattr(paid_object, "payment_intent", None) if is_checkout_event else paid_object.id
-            ride_id = getattr(paid_object, "metadata", {}).get("ride_id")
+            ride_id = metadata.get("ride_id")
             session_id = getattr(paid_object, "id", None) if is_checkout_event else None
             ride = db.get(Ride, int(ride_id)) if ride_id and str(ride_id).isdigit() else None
             if ride is None and session_id:
@@ -657,6 +882,9 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
                     ride.stripe_checkout_session_id = session_id
                 ride.payment_status = "paid"
                 db.commit()
+                if ride.status == "completed":
+                    queue_receipt(ride.id)
+                publish_ride_event(ride.id, "ride.updated")
     elif event.type in {"checkout.session.expired", "checkout.session.async_payment_failed"}:
         session = event.data.object
         with SessionLocal() as db:
@@ -717,6 +945,13 @@ def driver_me(db: Session = Depends(get_db), user: User = Depends(current_user))
 def nearby_drivers(latitude: float, longitude: float, db: Session = Depends(get_db), user: User = Depends(current_user)):
     if user.role != "rider":
         raise HTTPException(403, "Rider account required")
+    if engine.dialect.name == "postgresql":
+        rows = db.execute(text("""SELECT id, name, car, plate, ride_type, rating, latitude, longitude,
+            ST_Distance(location, ST_SetSRID(ST_MakePoint(:longitude, :latitude), 4326)::geography) / 1000.0 AS distance_km
+            FROM drivers WHERE available IS TRUE AND location IS NOT NULL
+            AND ST_DWithin(location, ST_SetSRID(ST_MakePoint(:longitude, :latitude), 4326)::geography, 3000)
+            ORDER BY location <-> ST_SetSRID(ST_MakePoint(:longitude, :latitude), 4326)::geography"""), {"latitude": latitude, "longitude": longitude}).mappings().all()
+        return [dict(row) for row in rows]
     drivers = db.scalars(select(Driver).where(
         Driver.available.is_(True), Driver.latitude.is_not(None), Driver.longitude.is_not(None),
     )).all()
@@ -757,5 +992,9 @@ def update_driver_location(data: CoordinatesIn, db: Session = Depends(get_db), u
         raise HTTPException(404, "Driver profile not found")
     driver.latitude = data.latitude
     driver.longitude = data.longitude
+    if engine.dialect.name == "postgresql":
+        db.execute(text("UPDATE drivers SET location = ST_SetSRID(ST_MakePoint(:longitude, :latitude), 4326)::geography WHERE id = :driver_id"), {"longitude": data.longitude, "latitude": data.latitude, "driver_id": driver.id})
     db.commit()
+    for ride_id in db.scalars(select(Ride.id).where(Ride.driver_id == driver.id, Ride.status.in_(["accepted", "arriving", "in_progress"]))):
+        publish_ride_event(ride_id, "ride.updated")
     return {"latitude": driver.latitude, "longitude": driver.longitude}

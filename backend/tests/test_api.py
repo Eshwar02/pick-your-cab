@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import pytest
+import hashlib
+import hmac
+import json
 import statistics
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -162,6 +165,81 @@ def test_cancel_flow_and_completed_ride_cannot_be_cancelled(client):
     ride_id = response.json()["id"]
     assert client.post(f"/api/rides/{ride_id}/cancel", headers=rider_headers).json()["status"] == "cancelled"
     assert client.post(f"/api/rides/{ride_id}/cancel", headers=rider_headers).status_code == 409
+
+
+def test_promo_code_is_validated_and_discount_applied_server_side(client):
+    _, headers = register(client, email="promo@example.com")
+    promo = client.get("/api/promos/welcome10", headers=headers)
+    assert promo.status_code == 200
+    assert promo.json()["percent_off"] == 10
+    request = {
+        "pickup": "Central Station", "destination": "City Park", "ride_type": "cab",
+        "pickup_latitude": 12.9716, "pickup_longitude": 77.5946,
+        "destination_latitude": 12.9816, "destination_longitude": 77.6046,
+        "promo_code": "welcome10",
+    }
+    ride = client.post("/api/rides", headers=headers, json=request)
+    assert ride.status_code == 200, ride.text
+    assert ride.json()["promo_code"] == "WELCOME10"
+    assert ride.json()["discount_paise"] > 0
+    assert ride.json()["fare_paise"] < 14750
+    request["promo_code"] = "BAD-CODE"
+    assert client.post("/api/rides", headers=headers, json=request).status_code == 422
+
+
+def test_wallet_exists_and_topup_requires_stripe(client):
+    _, headers = register(client, email="wallet@example.com")
+    wallet = client.get("/api/wallet", headers=headers)
+    assert wallet.status_code == 200
+    assert wallet.json()["balance_paise"] == 0
+    assert client.post("/api/wallet/topups", headers=headers, json={"amount_paise": 50000}).status_code == 503
+
+
+def test_receipt_pdf_generation_produces_downloadable_pdf():
+    from tasks import make_receipt_pdf
+
+    pdf = make_receipt_pdf(7, "Station", "Park", "cab", 5.0, 12000, "2026-10-20T10:00:00+00:00")
+    assert pdf.startswith(b"%PDF-")
+    assert b"Zoomo ride receipt" in pdf
+
+
+def test_signed_wallet_topup_is_idempotent_and_wallet_pays_completed_ride(client):
+    _, rider_headers = register(client, email="wallet-ride@example.com")
+    _, driver_headers = register(client, email="wallet-driver@example.com", role="driver", ride_type="cab")
+    user = client.get("/api/auth/me", headers=rider_headers).json()
+    event = {
+        "id": "evt_wallet_topup_test", "object": "event", "type": "checkout.session.completed",
+        "data": {"object": {
+            "id": "cs_wallet_test", "payment_status": "paid", "amount_total": 50000, "currency": "inr",
+            "metadata": {"purpose": "wallet_topup", "user_id": str(user["id"]), "amount_paise": "50000"},
+        }},
+    }
+    payload = json.dumps(event, separators=(",", ":")).encode()
+    timestamp = str(int(time.time()))
+    signature = hmac.new(b"whsec_test", timestamp.encode() + b"." + payload, hashlib.sha256).hexdigest()
+    headers = {**rider_headers, "Stripe-Signature": f"t={timestamp},v1={signature}"}
+    assert client.post("/api/webhooks/stripe", content=payload, headers=headers).status_code == 200
+    assert client.post("/api/webhooks/stripe", content=payload, headers=headers).status_code == 200
+    assert client.get("/api/wallet", headers=rider_headers).json()["balance_paise"] == 50000
+
+    ride = client.post("/api/rides", headers=rider_headers, json={
+        "pickup": "Central Station", "destination": "City Park", "ride_type": "cab",
+        "pickup_latitude": 12.9716, "pickup_longitude": 77.5946,
+        "destination_latitude": 12.9816, "destination_longitude": 77.6046,
+    }).json()
+    for status in ("accepted", "arriving", "arrived"):
+        client.patch(f"/api/rides/{ride['id']}/status", headers=driver_headers, json={"status": status})
+    otp = client.get(f"/api/rides/{ride['id']}", headers=rider_headers).json()["otp"]
+    client.post(f"/api/rides/{ride['id']}/verify-otp", headers=driver_headers, json={"otp": otp})
+    client.patch(f"/api/rides/{ride['id']}/status", headers=driver_headers, json={"status": "completed"})
+    paid = client.post(f"/api/wallet/pay/{ride['id']}", headers=rider_headers)
+    assert paid.status_code == 200, paid.text
+    assert paid.json()["payment_status"] == "paid"
+    assert paid.json()["balance_paise"] == 50000 - ride["fare_paise"]
+    receipt = client.get(f"/api/rides/{ride['id']}/receipt", headers=rider_headers)
+    assert receipt.status_code == 200
+    assert receipt.headers["content-type"] == "application/pdf"
+    assert receipt.content.startswith(b"%PDF-")
 
 
 def test_payment_is_blocked_until_completion_and_requires_stripe_config(client):
