@@ -637,10 +637,17 @@ def get_wallet(db: Session = Depends(get_db), user: User = Depends(current_user)
 
 
 @app.post("/api/wallet/topups")
-def create_wallet_topup(data: WalletTopupIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def create_wallet_topup(data: WalletTopupIn, request: Request, db: Session = Depends(get_db), user: User = Depends(current_user)):
     if not STRIPE_SECRET_KEY:
         raise HTTPException(503, "Wallet top-ups require Stripe configuration")
     frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
+    request_origin = request.headers.get("origin", "").rstrip("/")
+    allowed_origins = {origin.strip().rstrip("/") for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",") if origin.strip()}
+    allowed_origins.add(frontend_url)
+    if request_origin:
+        if request_origin not in allowed_origins:
+            raise HTTPException(400, "This frontend origin is not configured for Stripe returns")
+        frontend_url = request_origin
     checkout = stripe.checkout.Session.create(
         mode="payment", line_items=[{"price_data": {"currency": "inr", "product_data": {"name": "Zoomo wallet top-up"}, "unit_amount": data.amount_paise}, "quantity": 1}],
         success_url=f"{frontend_url}/?wallet=success&session_id={{CHECKOUT_SESSION_ID}}", cancel_url=f"{frontend_url}/?wallet=cancelled",

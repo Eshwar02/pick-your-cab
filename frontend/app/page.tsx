@@ -118,7 +118,8 @@ export default function Home() {
         const detailsFailed = await loadAccountDetails(current, saved);
         if (!active) return;
         saveSession(saved, current);
-        setToken(saved); setUser(current); setView(current.role === "driver" ? "driver" : "ride");
+        const walletReturn = new URLSearchParams(window.location.search).has("wallet");
+        setToken(saved); setUser(current); setView(walletReturn && current.role === "rider" ? "wallet" : current.role === "driver" ? "driver" : "ride");
         if (detailsFailed) setError("Some account details could not load. Refresh to try again.");
       } catch (reason) {
         if (!active) return;
@@ -144,6 +145,8 @@ export default function Home() {
       if (params.get("view") === "history") setView("history");
       if (payment === "success") setPaymentNotice("Payment submitted. Ride history will update after Stripe confirms it.");
       if (payment === "cancelled") setPaymentNotice("Payment cancelled. You can retry from ride history.");
+      if (params.get("wallet") === "success") setPaymentNotice("Payment submitted. Your wallet balance will update after Stripe confirms it.");
+      if (params.get("wallet") === "cancelled") setPaymentNotice("Top-up cancelled. You can choose another amount and try again.");
     });
     if (payment || params.has("view")) {
       params.delete("payment"); params.delete("session_id"); params.delete("ride_id"); params.delete("view");
