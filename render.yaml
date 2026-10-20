@@ -1,8 +1,9 @@
 services:
   - type: web
-    name: zoomo-api
+    name: cabby-api
     runtime: python
     plan: free
+    region: singapore
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
@@ -33,6 +34,7 @@ services:
     name: zoomo-receipt-worker
     runtime: python
     plan: starter
+    region: singapore
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: celery -A tasks.celery worker --loglevel=INFO --concurrency=2
@@ -40,7 +42,7 @@ services:
       - key: SUPABASE_DATABASE_URL
         fromService:
           type: web
-          name: zoomo-api
+          name: cabby-api
           envVarKey: SUPABASE_DATABASE_URL
       - key: REDIS_URL
         fromService:
@@ -50,6 +52,7 @@ services:
   - type: keyvalue
     name: zoomo-redis
     plan: starter
+    region: singapore
     maxmemoryPolicy: noeviction
     persistenceMode: journal-snapshot
     ipAllowList: []

@@ -134,7 +134,7 @@ Open [localhost:3000](http://localhost:3000). API docs: [localhost:8000/docs](ht
 | `MAPS_USER_AGENT` | API | Recommended | Contactable identifier for public geocoding requests. |
 | `STRIPE_SECRET_KEY` | API | For card checkout | Stripe test or live secret key. Checkout is unavailable when missing. |
 | `STRIPE_WEBHOOK_SECRET` | API | For card checkout | Signing secret for the deployed Stripe webhook. |
-| `NEXT_PUBLIC_API_URL` | Web build | Production | Public API origin, for example `https://zoomo-api.onrender.com`; no `/api` suffix. |
+| `NEXT_PUBLIC_API_URL` | Web build | Production | Public API origin, for example `https://cabby-api.onrender.com`; no `/api` suffix. |
 
 `NEXT_PUBLIC_API_URL` is build-time config. Set in Vercel before build; redeploy after changes.
 Set API `REDIS_URL` and keep the `zoomo-receipt-worker` running for queued PDF generation and live ride events. Local dev can omit Redis; receipts generate inline and live tracking falls back to polling.
@@ -159,7 +159,7 @@ Create/update Blueprint from `render.yaml`. Set:
 - `MAPS_USER_AGENT` with a real contact address
 - `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` for payments
 
-Blueprint service name: `zoomo-api`. Blueprint rename does not rename existing Render service/host. Set `NEXT_PUBLIC_API_URL` to actual API origin.
+Blueprint API service name: `cabby-api` (matches current Render service); keep `NEXT_PUBLIC_API_URL` set to its actual public origin. Redis and receipt worker use paid Render plans so the queue persists and receipts run off-request.
 
 ### Vercel web app
 
