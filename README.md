@@ -29,6 +29,11 @@ Early-stage SaaS MVP: responsive web app, role-aware API, PostgreSQL, maps, Stri
 - FastAPI enforces roles + ride-state transitions.
 - API calculates route fares server-side.
 - Stripe webhook checks signature, ride, amount, INR currency before paid status.
+- Driver location uses PostGIS geography + GiST index in hosted PostgreSQL; nearby search uses `ST_DWithin`.
+- Ride tracking uses Redis pub/sub WebSockets; periodic polling remains fallback if socket setup fails.
+- Paid rides get PDF receipts. Redis + Celery worker generates receipts asynchronously; no email delivery.
+- `WELCOME10` is seeded promo: 10% off, capped at ₹50. Booking API revalidates and applies discount server-side.
+- Rider wallet supports Stripe Checkout top-ups, ledger, and completed-ride payment. Signed webhook credits top-ups once.
 - Supabase PostgreSQL in production; SQLite local.
 - Signed bearer session + small profile cache in browser; server revokes session at logout.
 - Login screen opens directly; no blocking account-check splash.
@@ -58,6 +63,7 @@ Animation honors `prefers-reduced-motion`.
 | Database | Supabase PostgreSQL or local SQLite | `supabase/migrations/` |
 | Routing and geocoding | OSRM, Photon, Nominatim | Configurable backend endpoints |
 | Checkout | Stripe Checkout and signed webhooks | `backend/main.py` |
+| Queue and live events | Redis + Celery + WebSockets | `backend/tasks.py`, `backend/main.py` |
 | Web hosting | Vercel | `frontend/` |
 | API hosting | Render Blueprint | `render.yaml` |
 
@@ -131,12 +137,15 @@ Open [localhost:3000](http://localhost:3000). API docs: [localhost:8000/docs](ht
 | `NEXT_PUBLIC_API_URL` | Web build | Production | Public API origin, for example `https://zoomo-api.onrender.com`; no `/api` suffix. |
 
 `NEXT_PUBLIC_API_URL` is build-time config. Set in Vercel before build; redeploy after changes.
+Set API `REDIS_URL` and keep the `zoomo-receipt-worker` running for queued PDF generation and live ride events. Local dev can omit Redis; receipts generate inline and live tracking falls back to polling.
 
 ## Database and deployment
 
 ### Supabase
 
 New production DB: apply every `supabase/migrations/` SQL file in filename order via Supabase SQL Editor. Use Session pooler URL for `SUPABASE_DATABASE_URL`; keep credentials on API server. FastAPI enforces authorization; RLS does not replace API checks.
+
+Apply `20261020000000_live_features.sql` before deploying updated API. It enables PostGIS and creates the geography index, promo, wallet ledger, and receipt tables.
 
 API creates `auth_sessions` at startup. Keep app schema + SQL migrations aligned for future DB changes.
 

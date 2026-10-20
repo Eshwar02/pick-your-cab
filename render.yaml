@@ -24,3 +24,32 @@ services:
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: zoomo-redis
+          property: connectionString
+  - type: worker
+    name: zoomo-receipt-worker
+    runtime: python
+    plan: starter
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: celery -A tasks.celery worker --loglevel=INFO --concurrency=2
+    envVars:
+      - key: SUPABASE_DATABASE_URL
+        fromService:
+          type: web
+          name: zoomo-api
+          envVarKey: SUPABASE_DATABASE_URL
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: zoomo-redis
+          property: connectionString
+  - type: keyvalue
+    name: zoomo-redis
+    plan: starter
+    maxmemoryPolicy: noeviction
+    persistenceMode: journal-snapshot
+    ipAllowList: []
