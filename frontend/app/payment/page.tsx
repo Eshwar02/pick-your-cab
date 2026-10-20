@@ -82,6 +82,16 @@ export default function PaymentPage() {
     finally { setBusy(false); }
   }
 
+  async function payWithWallet() {
+    if (!token || !rideId) return;
+    setBusy(true); setError("");
+    try {
+      await request(`/api/wallet/pay/${rideId}`, token, { method: "POST" });
+      await refreshRide(token, rideId);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Wallet payment failed"); }
+    finally { setBusy(false); }
+  }
+
   const paid = ride?.payment_status === "paid";
   return (
     <main className="auth-gate">
@@ -102,6 +112,7 @@ export default function PaymentPage() {
         {error && <p className="form-error" role="alert">{error}</p>}
         {ride?.status !== "completed" && ride && <p className="payment-help">Payment opens after driver marks ride completed.</p>}
         {!paid && ride?.status === "completed" && (returnStatus !== "success" || ride.payment_status === "unpaid") && <button className="book-button" disabled={busy} onClick={() => void startPayment()}>{busy ? "Opening secure checkout…" : `Continue to Stripe · ${money(ride.fare_paise)}`}</button>}
+        {!paid && ride?.status === "completed" && <button className="next-button" disabled={busy} onClick={() => void payWithWallet()}>Pay with wallet</button>}
         {returnStatus === "success" && !paid && <button className="next-button" disabled={busy} onClick={() => void checkStatus()}>{busy ? "Checking…" : "Check payment status"}</button>}
         <Link className="payment-back" href="/?view=history">Return to Zoomo</Link>
         <p className="payment-secure-note">Card details handled securely by Stripe Checkout.</p>

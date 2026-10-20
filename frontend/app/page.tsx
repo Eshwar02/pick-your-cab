@@ -14,7 +14,7 @@ const EMPTY_MAP_PATH: [number, number][] = [];
 type Place = { label: string; latitude: number; longitude: number; address?: Record<string, string | number>; geocoding_source?: string };
 type User = { id: number; name: string; email: string; role: "rider" | "driver" };
 type Mode = { id: string; name: string; description: string; icon: string; seats: number; fare_paise: number };
-type Ride = { id: number; pickup: string; destination: string; ride_type: string; status: string; distance_km: number; duration_min: number; fare_paise: number; payment_status: string; reviewed: boolean; created_at?: string; pickup_latitude?: number | null; pickup_longitude?: number | null; destination_latitude?: number | null; destination_longitude?: number | null; otp?: string | null; driver: null | { name: string; car: string; plate: string; rating: number | null; rating_count: number; latitude: number | null; longitude: number | null } };
+type Ride = { id: number; pickup: string; destination: string; ride_type: string; status: string; distance_km: number; duration_min: number; fare_paise: number; discount_paise?: number; promo_code?: string | null; payment_status: string; reviewed: boolean; created_at?: string; pickup_latitude?: number | null; pickup_longitude?: number | null; destination_latitude?: number | null; destination_longitude?: number | null; otp?: string | null; driver: null | { name: string; car: string; plate: string; rating: number | null; rating_count: number; latitude: number | null; longitude: number | null } };
 type Route = { distance_km: number; duration_min: number; path: [number, number][]; modes?: Mode[] };
 
 class ApiError extends Error {
@@ -64,6 +64,12 @@ export default function Home() {
   const [approachPath, setApproachPath] = useState<[number, number][] | null>(null);
   const lastApproachFetch = useRef(0);
   const [selectedMode, setSelectedMode] = useState("");
+  const [promoCode, setPromoCode] = useState("");
+  const [promoMessage, setPromoMessage] = useState("");
+  const [promoOffer, setPromoOffer] = useState<{ percent_off: number; max_discount_paise: number } | null>(null);
+  const [walletBalance, setWalletBalance] = useState<number | null>(null);
+  const [walletTransactions, setWalletTransactions] = useState<{ id: number; ride_id: number | null; amount_paise: number; kind: string; created_at: string }[]>([]);
+  const [walletAmount, setWalletAmount] = useState("500");
   const [ride, setRide] = useState<Ride | null>(null);
   const [history, setHistory] = useState<Ride[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -80,7 +86,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [paymentNotice, setPaymentNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  const [view, setView] = useState<"ride" | "history" | "driver">("ride");
+  const [view, setView] = useState<"ride" | "history" | "driver" | "wallet">("ride");
 
   const loadAccountDetails = useCallback(async (account: User, authToken: string): Promise<boolean> => {
     if (account.role === "rider") {
@@ -214,10 +220,47 @@ export default function Home() {
     if (!pickup || !destination) return;
     setBusy(true); setError("");
     try {
-      const created = await api<Ride>("/api/rides", token, { method: "POST", body: JSON.stringify({ pickup: pickup.label, destination: destination.label, ride_type: mode, pickup_latitude: pickup.latitude, pickup_longitude: pickup.longitude, destination_latitude: destination.latitude, destination_longitude: destination.longitude }) });
+      const created = await api<Ride>("/api/rides", token, { method: "POST", body: JSON.stringify({ pickup: pickup.label, destination: destination.label, ride_type: mode, pickup_latitude: pickup.latitude, pickup_longitude: pickup.longitude, destination_latitude: destination.latitude, destination_longitude: destination.longitude, promo_code: promoCode.trim() || null }) });
       setRide(created); setSelectedMode(mode); setStep("tracking");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Booking failed"); }
     finally { setBusy(false); }
+  }
+
+  async function checkPromo() {
+    if (!promoCode.trim()) { setPromoMessage("Enter promo code first."); return; }
+    try {
+      const promo = await api<{ percent_off: number; max_discount_paise: number }>(`/api/promos/${encodeURIComponent(promoCode.trim())}`, token);
+      setPromoOffer(promo);
+      setPromoMessage(`${promo.percent_off}% off, up to ${fmt(promo.max_discount_paise)}. Discount applies at booking.`);
+    } catch (reason) { setPromoOffer(null); setPromoMessage(reason instanceof Error ? reason.message : "Promo code unavailable"); }
+  }
+
+  const refreshWallet = useCallback(async () => {
+    const wallet = await api<{ balance_paise: number; transactions: typeof walletTransactions }>("/api/wallet", token);
+    setWalletBalance(wallet.balance_paise); setWalletTransactions(wallet.transactions);
+  }, [token]);
+
+  async function topupWallet() {
+    setBusy(true); setError("");
+    try {
+      const result = await api<{ url: string }>("/api/wallet/topups", token, { method: "POST", body: JSON.stringify({ amount_paise: Math.round(Number(walletAmount) * 100) }) });
+      window.location.assign(result.url);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Wallet top-up failed"); }
+    finally { setBusy(false); }
+  }
+
+  async function downloadReceipt(rideId: number) {
+    for (let attempt = 0; attempt < 15; attempt += 1) {
+      const response = await fetch(`${API}/api/rides/${rideId}/receipt`, { headers: { Authorization: `Bearer ${token}` } });
+      if (response.status === 202) { await new Promise((resolve) => window.setTimeout(resolve, 1000)); continue; }
+      if (!response.ok) throw new Error("Receipt unavailable. Try again shortly.");
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url; link.download = `zoomo-ride-${rideId}-receipt.pdf`; link.click();
+      URL.revokeObjectURL(url);
+      return;
+    }
+    throw new Error("Receipt still generating. Try again shortly.");
   }
 
   const refreshRide = useCallback(async () => {
@@ -258,6 +301,30 @@ export default function Home() {
       return () => window.clearInterval(timer);
     }
   }, [token, user, view]);
+
+  useEffect(() => {
+    if (view !== "wallet" || !token) return;
+    let active = true;
+    queueMicrotask(() => { if (active) void refreshWallet().catch((reason: Error) => setError(reason.message)); });
+    return () => { active = false; };
+  }, [view, token, refreshWallet]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("wallet") === "success" && token) queueMicrotask(() => { void refreshWallet().catch(() => {}); });
+  }, [token, refreshWallet]);
+
+  useEffect(() => {
+    if (!ride?.id || !token) return;
+    let active = true;
+    let socket: WebSocket | null = null;
+    void api<{ ticket: string }>(`/api/rides/${ride.id}/ws-ticket`, token, { method: "POST" }).then(({ ticket }) => {
+      if (!active) return;
+      socket = new WebSocket(API.replace(/^http/, "ws") + `/ws/rides/${ride.id}?ticket=${encodeURIComponent(ticket)}`);
+      socket.onmessage = () => { void refreshRide(); };
+    }).catch(() => {});
+    return () => { active = false; socket?.close(); };
+  }, [ride?.id, token, refreshRide]);
 
   useEffect(() => {
     if (user?.role !== "driver" || view !== "driver" || !availability || !navigator.geolocation) return;
@@ -346,7 +413,7 @@ export default function Home() {
   const statuses: Record<string, string> = { requested: "Finding a nearby driver", accepted: "Driver accepted your ride", arriving: "Driver is on the way", arrived: "Driver arrived · share OTP", in_progress: "Ride in progress", completed: "Ride completed", cancelled: "Ride cancelled" };
   const visibleHistory = history.filter((item) => (historyFilter === "all" || item.status === historyFilter) && `${item.pickup} ${item.destination} ${item.ride_type}`.toLowerCase().includes(historyQuery.trim().toLowerCase()));
   return <main className={`app-shell ${view === "ride" && user.role === "rider" && ["pickup", "destination", "modes", "tracking"].includes(step) ? "booking-screen" : ""}`}>
-    <header className="topbar"><Brand /><nav><button className={view === "ride" ? "active" : ""} onClick={() => setView("ride")}>Book ride</button>{user.role === "rider" ? <button onClick={() => setView("history")}>History</button> : <button onClick={() => setView("driver")}>Driver</button>}</nav><div className="profile-button">{user.name}<button onClick={logout}>Sign out</button></div></header>
+    <header className="topbar"><Brand /><nav><button className={view === "ride" ? "active" : ""} onClick={() => setView("ride")}>Book ride</button>{user.role === "rider" ? <><button className={view === "history" ? "active" : ""} onClick={() => setView("history")}>History</button><button className={view === "wallet" ? "active" : ""} onClick={() => setView("wallet")}>Wallet</button></> : <button onClick={() => setView("driver")}>Driver</button>}</nav><div className="profile-button">{user.name}<button onClick={logout}>Sign out</button></div></header>
     {error && <p className="form-error" role="alert">{error}</p>}
     {paymentNotice && <p className="payment-notice" role="status">{paymentNotice}</p>}
     {view === "ride" && user.role === "rider" && <>
@@ -355,7 +422,7 @@ export default function Home() {
         <div key={step} className={`flow-card location-flow location-step-panel ${step === "modes" ? "mode-flow" : ""}`}>
           {step === "pickup" && <><span className="section-kicker">STEP 1 OF 3 · PICKUP</span><h2>Where should we pick you up?</h2><p>Search an address or click the map to place your pickup pin.</p><button className="location-current-button" onClick={loadCurrentLocation}>◎ Use my current location</button>{pickup && <div className="selected-place">✓ <span>{pickup.label}{placeDetails(pickup) && <small className="address-detail">{placeDetails(pickup)}</small>}</span></div>}{placeSearch("Search pickup, street, or landmark")}{pickup && <button className="book-button location-continue" onClick={() => { setStep("destination"); setQuery(""); setResults([]); setMapPreview(null); }}>Continue to drop-off →</button>}</>}
           {step === "destination" && <><span className="section-kicker">STEP 2 OF 3 · DROP-OFF</span><h2>Where are you going?</h2><p>Search a destination or click the map to move the drop-off pin.</p><div className="selected-place pickup-summary">● <span>{pickup?.label}{placeDetails(pickup) && <small className="address-detail">{placeDetails(pickup)}</small>}</span><button onClick={() => { setStep("pickup"); setQuery(""); setResults([]); setMapPreview(pickup); }}>Change pickup</button></div>{destination && <div className="selected-place">◆ <span>{destination.label}{placeDetails(destination) && <small className="address-detail">{placeDetails(destination)}</small>}</span></div>}{placeSearch("Search destination, street, or landmark")}{destination && <button className="book-button location-continue" disabled={busy} onClick={() => void choosePlace(destination)}>{busy ? "Checking route…" : "Confirm drop-off →"}</button>}</>}
-          {step === "modes" && route && <><span className="section-kicker">STEP 3 OF 3 · CHOOSE RIDE</span><h2>Pick your ride</h2><p>{route.distance_km} km · about {route.duration_min} min</p><div className="selected-place pickup-summary">● <span>{pickup?.label}{placeDetails(pickup) && <small className="address-detail">{placeDetails(pickup)}</small>}</span><span>→</span>◆ <span>{destination?.label}{placeDetails(destination) && <small className="address-detail">{placeDetails(destination)}</small>}</span></div><div className="mode-list">{modes.map((mode) => <button key={mode.id} className={`mode-option ${selectedMode === mode.id ? "selected" : ""}`} onClick={() => setSelectedMode(mode.id)}><span className="mode-icon">{mode.icon}</span><span><strong>{mode.name}</strong><small>{mode.description} · {mode.seats} seats</small></span><b>{fmt(mode.fare_paise)}</b></button>)}</div>{selectedMode && <button className="book-button" disabled={busy} onClick={() => void requestRide()}>{busy ? "Requesting…" : `Request ${modes.find((mode) => mode.id === selectedMode)?.name}`}</button>}<button className="text-button" onClick={() => { setStep("destination"); setRoute(null); }}>← Change destination</button></>}
+          {step === "modes" && route && <><span className="section-kicker">STEP 3 OF 3 · CHOOSE RIDE</span><h2>Pick your ride</h2><p>{route.distance_km} km · about {route.duration_min} min</p><div className="selected-place pickup-summary">● <span>{pickup?.label}{placeDetails(pickup) && <small className="address-detail">{placeDetails(pickup)}</small>}</span><span>→</span>◆ <span>{destination?.label}{placeDetails(destination) && <small className="address-detail">{placeDetails(destination)}</small>}</span></div><div className="mode-list">{modes.map((mode) => { const due = promoOffer && promoCode.trim() ? mode.fare_paise - Math.min(Math.floor(mode.fare_paise * promoOffer.percent_off / 100), promoOffer.max_discount_paise) : mode.fare_paise; return <button key={mode.id} className={`mode-option ${selectedMode === mode.id ? "selected" : ""}`} onClick={() => setSelectedMode(mode.id)}><span className="mode-icon">{mode.icon}</span><span><strong>{mode.name}</strong><small>{mode.description} · {mode.seats} seats</small></span><b>{fmt(due)}</b></button>; })}</div><label className="wallet-promo">Promo code<input value={promoCode} onChange={(event) => { setPromoCode(event.target.value.toUpperCase()); setPromoMessage(""); setPromoOffer(null); }} placeholder="WELCOME10" maxLength={40} /></label><button className="text-button" onClick={() => void checkPromo()}>Check code</button>{promoMessage && <p role="status">{promoMessage}</p>}{selectedMode && <button className="book-button" disabled={busy} onClick={() => void requestRide()}>{busy ? "Requesting…" : `Request ${modes.find((mode) => mode.id === selectedMode)?.name}`}</button>}<button className="text-button" onClick={() => { setStep("destination"); setRoute(null); }}>← Change destination</button></>}
         </div>
         <section className="selection-map-panel" aria-label={step === "modes" ? "Route preview" : `Select ${step === "pickup" ? "pickup" : "drop-off"} location`}>
           <div key={step} className="selection-map-heading"><div><span className="section-kicker">{step === "modes" ? "ROUTE PREVIEW" : "LIVE MAP"}</span><strong>{step === "modes" ? "Pickup to drop-off" : `Choose ${step === "pickup" ? "pickup" : "drop-off"} point`}</strong></div><span className="map-picker-pin" aria-hidden="true">⌖</span></div>
@@ -370,9 +437,10 @@ export default function Home() {
       <div className="history-tools"><label className="history-search"><span aria-hidden="true">⌕</span><input aria-label="Search ride history" placeholder="Search pickup or destination" value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} />{historyQuery && <button aria-label="Clear history search" onClick={() => setHistoryQuery("")}>×</button>}</label><div className="history-filters" aria-label="Filter ride history">{(["all", "completed", "cancelled"] as const).map((filter) => <button key={filter} className={historyFilter === filter ? "selected" : ""} aria-pressed={historyFilter === filter} onClick={() => setHistoryFilter(filter)}>{filter === "all" ? "All trips" : filter === "completed" ? "Completed" : "Cancelled"}</button>)}</div></div>
       {historyLoading && !history.length ? <div className="history-empty" aria-live="polite"><span className="history-loader" aria-hidden="true" />Loading your trips…</div> : visibleHistory.length ? <div className="history-list">{visibleHistory.map((item) => <article className="history-card" key={item.id}>
         <div className="history-route-icon" aria-hidden="true">↗</div><div className="history-route"><strong>{item.pickup}<span>→</span>{item.destination}</strong><small>{item.created_at ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.created_at)) : `Ride #${item.id}`} · {item.ride_type.replaceAll("_", " ")}</small></div><span className={`history-status status-${item.status}`}>{item.status.replaceAll("_", " ")}</span><strong className="history-fare">{fmt(item.fare_paise)}</strong>
-        <div className="history-actions">{item.status === "completed" && item.payment_status !== "paid" && <button onClick={() => payRide(item.id)}>Pay fare</button>}{item.status === "completed" && !item.reviewed && !reviewed.includes(item.id) && (reviewing === item.id ? <span className="review-inline"><select aria-label="Driver rating" value={reviewRating} onChange={(e) => setReviewRating(Number(e.target.value))}>{[5, 4, 3, 2, 1].map((rating) => <option key={rating} value={rating}>{rating} stars</option>)}</select><input aria-label="Review comment" placeholder="Review" value={reviewComment} onChange={(e) => setReviewComment(e.target.value)} /><button onClick={() => void submitReview(item.id)}>Send</button></span> : <button onClick={() => setReviewing(item.id)}>Rate ride</button>)}{item.pickup_latitude != null && item.pickup_longitude != null && item.destination_latitude != null && item.destination_longitude != null ? <button className="repeat-ride" disabled={busy} onClick={() => void repeatRide(item)}>Book again <span aria-hidden="true">↗</span></button> : <span className="history-no-map">Map points unavailable</span>}</div>
+        <div className="history-actions">{item.status === "completed" && item.payment_status !== "paid" && <><button onClick={() => payRide(item.id)}>Pay by card</button><button onClick={async () => { try { await api(`/api/wallet/pay/${item.id}`, token, { method: "POST" }); await refreshWallet(); setHistory(await api<Ride[]>("/api/rides", token)); } catch (reason) { setError(reason instanceof Error ? reason.message : "Wallet payment failed"); } }}>Pay by wallet</button></>}{item.status === "completed" && item.payment_status === "paid" && <button onClick={() => { void downloadReceipt(item.id).catch((reason: Error) => setError(reason.message)); }}>Receipt PDF</button>}{item.status === "completed" && !item.reviewed && !reviewed.includes(item.id) && (reviewing === item.id ? <span className="review-inline"><select aria-label="Driver rating" value={reviewRating} onChange={(e) => setReviewRating(Number(e.target.value))}>{[5, 4, 3, 2, 1].map((rating) => <option key={rating} value={rating}>{rating} stars</option>)}</select><input aria-label="Review comment" placeholder="Review" value={reviewComment} onChange={(e) => setReviewComment(e.target.value)} /><button onClick={() => void submitReview(item.id)}>Send</button></span> : <button onClick={() => setReviewing(item.id)}>Rate ride</button>)}{item.pickup_latitude != null && item.pickup_longitude != null && item.destination_latitude != null && item.destination_longitude != null ? <button className="repeat-ride" disabled={busy} onClick={() => void repeatRide(item)}>Book again <span aria-hidden="true">↗</span></button> : <span className="history-no-map">Map points unavailable</span>}</div>
       </article>)}</div> : <div className="history-empty"><span aria-hidden="true">⌕</span><strong>{history.length ? "No matching trips" : "Your next ride starts here"}</strong><p>{history.length ? "Try another place or filter." : "Your completed and upcoming trips will appear here."}</p>{history.length > 0 && (historyQuery || historyFilter !== "all") && <button onClick={() => { setHistoryQuery(""); setHistoryFilter("all"); }}>Clear filters</button>}</div>}
     </section>}
+    {view === "wallet" && user.role === "rider" && <section className="data-panel"><span className="section-kicker">ZOOMO WALLET</span><h2>Wallet balance</h2><p className="wallet-balance">{walletBalance == null ? "Loading…" : fmt(walletBalance)}</p><label className="wallet-promo">Add funds (₹)<input type="number" min="100" max="50000" step="1" value={walletAmount} onChange={(event) => setWalletAmount(event.target.value)} /></label><button className="book-button" disabled={busy || !walletAmount || Number(walletAmount) < 100} onClick={() => void topupWallet()}>{busy ? "Opening Stripe…" : "Add funds with Stripe"}</button><p>Wallet top-ups confirm through Stripe webhook. Ride payments debit balance and create receipt.</p><h3>Recent activity</h3>{walletTransactions.length ? walletTransactions.map((transaction) => <article className="history-row" key={transaction.id}><div><strong>{transaction.kind === "topup" ? "Wallet top-up" : `Ride #${transaction.ride_id} payment`}</strong><small>{new Date(transaction.created_at).toLocaleString()}</small></div><b>{fmt(Math.abs(transaction.amount_paise))}{transaction.amount_paise < 0 ? " debited" : " added"}</b></article>) : <p>No wallet activity yet.</p>}</section>}
     {view === "driver" && user.role === "driver" && <section className="flow-card"><span className="section-kicker">DRIVER SPACE</span><div className="driver-heading"><h2>Ride requests</h2><button className="next-button" onClick={async () => { const result = await api<{ available: boolean }>(`/api/drivers/availability?available=${!availability}`, token, { method: "PATCH" }); setAvailability(result.available); }}>{availability ? "● Available" : "○ Offline"}</button></div><p className="driver-rating">{driverRating.rating_count ? <>Your rating: <strong>★ {driverRating.rating?.toFixed(1)}</strong> from {driverRating.rating_count} ride{driverRating.rating_count === 1 ? "" : "s"}</> : "No ratings yet. Your rider reviews will appear here."}</p><p>Keep location enabled to share live position while online.</p>{driverRides.map((item) => <article className="driver-ride" key={item.id}><strong>{item.pickup} → {item.destination}</strong><small>#{item.id} · {item.ride_type} · {item.status} · {fmt(item.fare_paise)}</small>{item.status === "requested" && <button onClick={() => void driverAction(`/api/rides/${item.id}/status`, { status: "accepted" })}>Accept ride</button>}{item.status === "accepted" && <button onClick={() => void driverAction(`/api/rides/${item.id}/status`, { status: "arriving" })}>On the way</button>}{item.status === "arriving" && <button onClick={() => void driverAction(`/api/rides/${item.id}/status`, { status: "arrived" })}>I’ve arrived</button>}{item.status === "arrived" && <form className="search-form" onSubmit={(e) => { e.preventDefault(); void verifyOtp(item.id); }}><input required pattern="[0-9]{4}" maxLength={4} value={otpInput} onChange={(e) => setOtpInput(e.target.value)} placeholder="Rider OTP" /><button disabled={busy}>Verify & start</button></form>}{item.status === "in_progress" && <button onClick={() => void driverAction(`/api/rides/${item.id}/status`, { status: "completed" })}>Complete ride</button>}</article>)}{!driverRides.length && <p>No matching rides yet.</p>}</section>}
     <footer className="footer">Zoomo · Routes via OSRM · OpenStreetMap</footer>
   </main>;
